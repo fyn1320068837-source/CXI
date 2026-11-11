@@ -117,6 +117,7 @@
         .pane-wrap { flex: 1; overflow: hidden; position: relative; }
         .pane { display: none; height: 100%; overflow-y: auto; padding: 24px 24px 32px; }
         .pane.active { display: block; }
+        .pane-inner { max-width: 900px; margin: 0 auto; }
 
         /* ── 通知横幅 ── */
         .banner {
@@ -175,8 +176,52 @@
         .btn-sm { padding: 4px 10px; font-size: 12px; }
         .btn-row { display: flex; gap: 8px; margin-top: 14px; }
 
-        /* ── 实例网格 ── */
-        .inst-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+        /* ── 服务状态：左右两栏 ── */
+        .status-layout {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            gap: 20px;
+            height: 100%;
+            align-items: start;
+        }
+        @media (max-width: 800px) {
+            .status-layout { grid-template-columns: 1fr; }
+        }
+        .status-left { display: flex; flex-direction: column; }
+        .status-right { min-width: 0; }
+        .panel-label {
+            font-size: 11px; font-weight: 600; letter-spacing: .1em;
+            text-transform: uppercase; color: var(--muted);
+            margin-bottom: 8px;
+        }
+        .proxy-stat {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 8px;
+        }
+        .proxy-ip {
+            font-family: 'SF Mono','Menlo',monospace;
+            font-size: 13px; font-weight: 600;
+        }
+        .proxy-meta {
+            display: flex; justify-content: space-between;
+            font-size: 12px; color: var(--muted);
+            padding-top: 8px; border-top: 1px solid var(--border);
+        }
+        .meta-latency { font-family: 'SF Mono','Menlo',monospace; }
+
+        /* ── 实例网格：2×2 ── */
+        .inst-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+        @media (max-width: 600px) {
+            .inst-grid { grid-template-columns: 1fr; }
+        }
+        .inst-val {
+            font-size: 11px;
+            color: var(--muted);
+        }
         .inst-card {
             background: var(--surface); border: 1px solid var(--border);
             border-radius: 10px; overflow: hidden;
@@ -329,150 +374,140 @@
 
     <!-- ══ TAB 1：服务状态 ══ -->
     <div class="pane active" id="pane-status">
+      <div class="pane-inner">
+        <div class="status-layout">
 
-        <div class="section-label">代理状态</div>
-        <div class="card">
-            <div class="row">
-                <span class="row-key">连接状态</span>
-                <span id="proxy-status"><span class="chip chip-grey">检测中…</span></span>
+            <!-- 左侧：代理 + 防火墙 -->
+            <div class="status-left">
+                <div class="panel-label">代理状态</div>
+                <div class="card">
+                    <div class="proxy-stat">
+                        <span id="proxy-status"><span class="chip chip-grey">检测中…</span></span>
+                        <span class="proxy-ip" id="proxy-ip">—</span>
+                    </div>
+                    <div class="proxy-meta">
+                        <span id="proxy-geo" class="meta-item">—</span>
+                        <span id="proxy-latency" class="meta-item meta-latency">—</span>
+                    </div>
+                    <div class="btn-row" style="margin-top:12px">
+                        <button class="btn btn-primary btn-sm" onclick="testProxy()">测试连接</button>
+                        <button class="btn btn-ghost btn-sm" onclick="showProxyConfig()">配置代理</button>
+                    </div>
+                </div>
+
+                <div class="panel-label" style="margin-top:16px">防火墙</div>
+                <div class="card">
+                    <div class="row">
+                        <span class="row-key">PF 规则</span>
+                        <span id="firewall-status"><span class="chip chip-warn">软隔离模式</span></span>
+                    </div>
+                    <div style="margin-top:10px;font-size:11px;color:var(--muted);line-height:1.6">
+                        安装内核级防火墙兜底：<br>
+                        <code style="font-size:11px">sudo cim install-firewall</code>
+                    </div>
+                </div>
             </div>
-            <div class="row">
-                <span class="row-key">出口 IP</span>
-                <span class="row-val" id="proxy-ip">—</span>
+
+            <!-- 右侧：四实例 2×2 -->
+            <div class="status-right">
+                <div class="panel-label">实例管理</div>
+                <div class="inst-grid">
+
+                    <div class="inst-card">
+                        <div class="inst-top">
+                            <div class="inst-name"><div class="inst-letter">A</div>Claude Code</div>
+                            <span id="code-status"><span class="chip chip-stopped">已停止</span></span>
+                        </div>
+                        <div class="inst-body">
+                            <div class="inst-row">
+                                <span class="inst-key">隔离</span>
+                                <code class="inst-val">env HOME=</code>
+                            </div>
+                            <div class="inst-row">
+                                <span class="inst-key">验证</span>
+                                <span id="code-validation"><span class="chip chip-grey">UNKNOWN</span></span>
+                            </div>
+                        </div>
+                        <div class="inst-actions">
+                            <button class="btn btn-primary btn-sm" id="code-launch" onclick="launch('code')">启动</button>
+                            <button class="btn btn-ghost btn-sm"   id="code-stop"   onclick="stop('code')">停止</button>
+                        </div>
+                    </div>
+
+                    <div class="inst-card">
+                        <div class="inst-top">
+                            <div class="inst-name"><div class="inst-letter">B</div>Claude Desktop</div>
+                            <span id="desktop-status"><span class="chip chip-stopped">已停止</span></span>
+                        </div>
+                        <div class="inst-body">
+                            <div class="inst-row">
+                                <span class="inst-key">隔离</span>
+                                <code class="inst-val">open -a Claude</code>
+                            </div>
+                            <div class="inst-row">
+                                <span class="inst-key">验证</span>
+                                <span id="desktop-validation"><span class="chip chip-grey">UNSUPPORTED</span></span>
+                            </div>
+                            <div style="margin-top:6px;font-size:11px;color:var(--muted)">软隔离，进程级验证不可用</div>
+                        </div>
+                        <div class="inst-actions">
+                            <button class="btn btn-primary btn-sm" id="desktop-launch" onclick="launch('desktop')">启动</button>
+                            <button class="btn btn-ghost btn-sm"   id="desktop-stop"   onclick="stop('desktop')">停止</button>
+                        </div>
+                    </div>
+
+                    <div class="inst-card">
+                        <div class="inst-top">
+                            <div class="inst-name"><div class="inst-letter">C</div>VS Code 扩展</div>
+                            <span id="vscode-status"><span class="chip chip-stopped">已停止</span></span>
+                        </div>
+                        <div class="inst-body">
+                            <div class="inst-row">
+                                <span class="inst-key">隔离</span>
+                                <code class="inst-val">--user-data-dir</code>
+                            </div>
+                            <div class="inst-row">
+                                <span class="inst-key">验证</span>
+                                <span id="vscode-validation"><span class="chip chip-grey">UNKNOWN</span></span>
+                            </div>
+                        </div>
+                        <div class="inst-actions">
+                            <button class="btn btn-primary btn-sm" id="vscode-launch" onclick="launch('vscode')">启动</button>
+                            <button class="btn btn-ghost btn-sm"   id="vscode-stop"   onclick="stop('vscode')">停止</button>
+                        </div>
+                    </div>
+
+                    <div class="inst-card">
+                        <div class="inst-top">
+                            <div class="inst-name"><div class="inst-letter">D</div>Claude Web</div>
+                            <span id="web-status"><span class="chip chip-stopped">已停止</span></span>
+                        </div>
+                        <div class="inst-body">
+                            <div class="inst-row">
+                                <span class="inst-key">隔离</span>
+                                <code class="inst-val">--user-data-dir</code>
+                            </div>
+                            <div class="inst-row">
+                                <span class="inst-key">验证</span>
+                                <span id="web-validation"><span class="chip chip-grey">UNKNOWN</span></span>
+                            </div>
+                        </div>
+                        <div class="inst-actions">
+                            <button class="btn btn-primary btn-sm" id="web-launch" onclick="launch('web')">启动</button>
+                            <button class="btn btn-ghost btn-sm"   id="web-stop"   onclick="stop('web')">停止</button>
+                        </div>
+                    </div>
+
+                </div>
             </div>
-            <div class="row">
-                <span class="row-key">地理位置</span>
-                <span class="row-val" id="proxy-geo">—</span>
-            </div>
-            <div class="row">
-                <span class="row-key">延迟</span>
-                <span class="row-val" id="proxy-latency">—</span>
-            </div>
-            <div class="btn-row">
-                <button class="btn btn-primary btn-sm" onclick="testProxy()">测试连接</button>
-                <button class="btn btn-ghost btn-sm" onclick="showProxyConfig()">配置代理</button>
-            </div>
+
         </div>
-
-        <div class="section-label">实例管理</div>
-        <div class="inst-grid">
-
-            <div class="inst-card">
-                <div class="inst-top">
-                    <div class="inst-name">
-                        <div class="inst-letter">A</div>
-                        Claude Code
-                    </div>
-                    <span id="code-status"><span class="chip chip-stopped">已停止</span></span>
-                </div>
-                <div class="inst-body">
-                    <div class="inst-row">
-                        <span class="inst-key">隔离方式</span>
-                        <span style="font-size:11px;font-family:monospace">env HOME=</span>
-                    </div>
-                    <div class="inst-row">
-                        <span class="inst-key">网络验证</span>
-                        <span id="code-validation"><span class="chip chip-grey">UNKNOWN</span></span>
-                    </div>
-                </div>
-                <div class="inst-actions">
-                    <button class="btn btn-primary btn-sm" id="code-launch" onclick="launch('code')">启动</button>
-                    <button class="btn btn-ghost btn-sm"   id="code-stop"   onclick="stop('code')">停止</button>
-                </div>
-            </div>
-
-            <div class="inst-card">
-                <div class="inst-top">
-                    <div class="inst-name">
-                        <div class="inst-letter">B</div>
-                        Claude Desktop
-                    </div>
-                    <span id="desktop-status"><span class="chip chip-stopped">已停止</span></span>
-                </div>
-                <div class="inst-body">
-                    <div class="inst-row">
-                        <span class="inst-key">隔离方式</span>
-                        <span style="font-size:11px;font-family:monospace">open -a Claude</span>
-                    </div>
-                    <div class="inst-row">
-                        <span class="inst-key">网络验证</span>
-                        <span id="desktop-validation"><span class="chip chip-grey">UNSUPPORTED</span></span>
-                    </div>
-                    <div class="inst-row" style="color:var(--muted);font-size:11px;">
-                        软隔离模式，进程级验证不可用
-                    </div>
-                </div>
-                <div class="inst-actions">
-                    <button class="btn btn-primary btn-sm" id="desktop-launch" onclick="launch('desktop')">启动</button>
-                    <button class="btn btn-ghost btn-sm"   id="desktop-stop"   onclick="stop('desktop')">停止</button>
-                </div>
-            </div>
-
-            <div class="inst-card">
-                <div class="inst-top">
-                    <div class="inst-name">
-                        <div class="inst-letter">C</div>
-                        VS Code 扩展
-                    </div>
-                    <span id="vscode-status"><span class="chip chip-stopped">已停止</span></span>
-                </div>
-                <div class="inst-body">
-                    <div class="inst-row">
-                        <span class="inst-key">隔离方式</span>
-                        <span style="font-size:11px;font-family:monospace">--user-data-dir</span>
-                    </div>
-                    <div class="inst-row">
-                        <span class="inst-key">网络验证</span>
-                        <span id="vscode-validation"><span class="chip chip-grey">UNKNOWN</span></span>
-                    </div>
-                </div>
-                <div class="inst-actions">
-                    <button class="btn btn-primary btn-sm" id="vscode-launch" onclick="launch('vscode')">启动</button>
-                    <button class="btn btn-ghost btn-sm"   id="vscode-stop"   onclick="stop('vscode')">停止</button>
-                </div>
-            </div>
-
-            <div class="inst-card">
-                <div class="inst-top">
-                    <div class="inst-name">
-                        <div class="inst-letter">D</div>
-                        Claude Web
-                    </div>
-                    <span id="web-status"><span class="chip chip-stopped">已停止</span></span>
-                </div>
-                <div class="inst-body">
-                    <div class="inst-row">
-                        <span class="inst-key">隔离方式</span>
-                        <span style="font-size:11px;font-family:monospace">--user-data-dir</span>
-                    </div>
-                    <div class="inst-row">
-                        <span class="inst-key">网络验证</span>
-                        <span id="web-validation"><span class="chip chip-grey">UNKNOWN</span></span>
-                    </div>
-                </div>
-                <div class="inst-actions">
-                    <button class="btn btn-primary btn-sm" id="web-launch" onclick="launch('web')">启动</button>
-                    <button class="btn btn-ghost btn-sm"   id="web-stop"   onclick="stop('web')">停止</button>
-                </div>
-            </div>
-
-        </div>
-
-        <div class="section-label" style="margin-top:24px">防火墙</div>
-        <div class="card">
-            <div class="row">
-                <span class="row-key">PF 规则</span>
-                <span id="firewall-status"><span class="chip chip-warn">软隔离模式</span></span>
-            </div>
-            <div class="row" style="border:none;padding-bottom:0">
-                <span style="font-size:12px;color:var(--muted)">安装内核级防火墙兜底：<code>sudo cim install-firewall</code></span>
-            </div>
-        </div>
-
+      </div><!-- /pane-inner -->
     </div><!-- /pane-status -->
 
     <!-- ══ TAB 2：日志管理 ══ -->
     <div class="pane" id="pane-logs">
+      <div class="pane-inner">
         <div class="log-toolbar">
             <span><span class="live-dot"></span>实时捕获</span>
             <select class="log-filter" id="filter-inst" onchange="renderLogs()">
@@ -511,10 +546,12 @@
                 </tbody>
             </table>
         </div>
+      </div><!-- /pane-inner -->
     </div><!-- /pane-logs -->
 
     <!-- ══ TAB 3：安装管理 ══ -->
     <div class="pane" id="pane-install">
+      <div class="pane-inner">
 
         <div class="section-label">系统要求</div>
         <div class="card" style="margin-bottom:24px">
@@ -597,6 +634,7 @@ launchctl load    ~/Library/LaunchAgents/com.cim.daemon.plist<button class="copy
             </div>
         </div>
 
+      </div><!-- /pane-inner -->
     </div><!-- /pane-install -->
 
 </div><!-- /pane-wrap -->
