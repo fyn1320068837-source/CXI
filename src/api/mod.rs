@@ -351,46 +351,44 @@ async fn test_proxy(
     axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
     body: Option<Json<ProxyTestRequest>>,
 ) -> Json<serde_json::Value> {
-    // 实际探测：经 127.0.0.1:7890 请求出口 IP
-    let client = match reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http("http://127.0.0.1:7890").unwrap())
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return Json(serde_json::json!({
-            "healthy": false,
-            "error": format!("Failed to build client: {}", e)
-        })),
-    };
-
     let start = std::time::Instant::now();
-    match client.get("https://api.ipify.org").send().await {
-        Ok(resp) => {
+
+    // 用 curl + socks5，和健康检查保持一致，避免 HTTP 代理走直连
+    let output = tokio::process::Command::new("curl")
+        .args(&[
+            "-s",
+            "-x", "socks5://127.0.0.1:7891",
+            "--max-time", "8",
+            "https://ipv4.icanhazip.com",
+        ])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let latency_ms = start.elapsed().as_millis() as u64;
-            match resp.text().await {
-                Ok(ip) => {
-                    let ip = ip.trim().to_string();
-                    Json(serde_json::json!({
-                        "healthy": true,
-                        "exit_ip": ip,
-                        "latency_ms": latency_ms,
-                        "geo": null
-                    }))
-                }
-                Err(e) => Json(serde_json::json!({
+            if !ip.is_empty() && ip.contains('.') {
+                Json(serde_json::json!({
+                    "healthy": true,
+                    "exit_ip": ip,
+                    "latency_ms": latency_ms,
+                    "geo": null
+                }))
+            } else {
+                Json(serde_json::json!({
                     "healthy": false,
-                    "error": format!("Failed to read response: {}", e)
-                })),
+                    "error": "PROXY_NO_RESPONSE"
+                }))
             }
         }
-        Err(e) => {
-            let msg = e.to_string();
-            let reason = if msg.contains("timed out") {
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let reason = if stderr.contains("timed out") || stderr.contains("Operation timed out") {
                 "PROXY_TIMEOUT"
-            } else if msg.contains("auth") || msg.contains("407") {
+            } else if stderr.contains("Authentication") || stderr.contains("407") {
                 "PROXY_AUTH_FAILED"
-            } else if msg.contains("connection refused") {
+            } else if stderr.contains("Connection refused") {
                 "PROXY_NOT_RUNNING"
             } else {
                 "PROXY_ERROR"
@@ -398,9 +396,14 @@ async fn test_proxy(
             Json(serde_json::json!({
                 "healthy": false,
                 "error": reason,
-                "detail": msg
+                "detail": stderr
             }))
         }
+        Err(e) => Json(serde_json::json!({
+            "healthy": false,
+            "error": "CURL_NOT_FOUND",
+            "detail": e.to_string()
+        })),
     }
 }
 
