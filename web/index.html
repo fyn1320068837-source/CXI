@@ -148,6 +148,39 @@
         .firewall-row { display: flex; justify-content: space-between; align-items: center;
             font-size: .9rem; }
         .firewall-note { margin-top: .6rem; font-size: .8rem; color: var(--muted); }
+
+        /* ── install steps ── */
+        .install-step {
+            display: flex; gap: 16px; align-items: flex-start;
+            padding: 16px 0; border-bottom: 1px solid var(--border);
+        }
+        .install-step:last-child { border-bottom: none; padding-bottom: 0; }
+        .step-num {
+            flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+            background: var(--accent); color: #fff;
+            font-size: .78rem; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+            margin-top: 2px;
+        }
+        .step-body { flex: 1; min-width: 0; }
+        .step-title { font-size: .9rem; font-weight: 600; margin-bottom: 8px; }
+        .step-desc { font-size: .82rem; color: var(--muted); line-height: 1.6; }
+        .step-code {
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 6px; padding: 10px 14px;
+            font-family: 'SF Mono', 'Menlo', monospace; font-size: .8rem;
+            white-space: pre; overflow-x: auto;
+            color: var(--text); line-height: 1.7; margin-bottom: 8px;
+        }
+        .btn-copy {
+            background: none; border: 1px solid var(--border);
+            color: var(--muted); border-radius: 5px;
+            padding: 3px 12px; font-size: .78rem;
+            cursor: pointer; font-family: inherit;
+            transition: border-color .15s, color .15s;
+        }
+        .btn-copy:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-copy.copied { border-color: var(--pass); color: var(--pass); }
     </style>
 </head>
 <body>
@@ -289,6 +322,54 @@
             <p class="firewall-note">
                 安装 PF 规则可提供内核级断线保护：<code>sudo cim install-firewall</code>
             </p>
+        </div>
+    </section>
+
+    <!-- ── 安装方式 ── -->
+    <section>
+        <h2>安装方式</h2>
+        <div class="card">
+            <div class="install-step">
+                <div class="step-num">1</div>
+                <div class="step-body">
+                    <div class="step-title">克隆仓库并安装</div>
+                    <div class="step-code" id="code-install">git clone https://github.com/fyn1320068837-source/CXI.git
+cd CXI
+./install.sh</div>
+                    <button class="btn-copy" onclick="copyCode('code-install')">复制</button>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">2</div>
+                <div class="step-body">
+                    <div class="step-title">打开控制台</div>
+                    <div class="step-code" id="code-open">open http://localhost:8080</div>
+                    <button class="btn-copy" onclick="copyCode('code-open')">复制</button>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">3</div>
+                <div class="step-body">
+                    <div class="step-title">配置 SOCKS5 代理</div>
+                    <div class="step-desc">在控制台中点击「配置代理」，填入住宅代理信息。密码自动保存到 macOS Keychain。</div>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">4</div>
+                <div class="step-body">
+                    <div class="step-title">安装防火墙规则（推荐）</div>
+                    <div class="step-code" id="code-fw">sudo cim install-firewall</div>
+                    <button class="btn-copy" onclick="copyCode('code-fw')">复制</button>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">5</div>
+                <div class="step-body">
+                    <div class="step-title">卸载</div>
+                    <div class="step-code" id="code-uninstall">./uninstall.sh</div>
+                    <button class="btn-copy" onclick="copyCode('code-uninstall')">复制</button>
+                </div>
+            </div>
         </div>
     </section>
 </main>
@@ -453,6 +534,29 @@ async function testProxy() {
 
 function showProxyConfig() {
     alert('代理配置功能将在下一版本中通过界面完成。\n目前请直接编辑 ~/.cim/config.toml');
+}
+
+// ── 复制代码 ───────────────────────────────────────────────
+function copyCode(id) {
+    const text = document.getElementById(id).textContent;
+    const btn = event.target;
+    navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '已复制 ✓';
+        btn.classList.add('copied');
+        setTimeout(() => {
+            btn.textContent = '复制';
+            btn.classList.remove('copied');
+        }, 2000);
+    }).catch(() => {
+        // 降级：选中文本
+        const el = document.getElementById(id);
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        btn.textContent = '已选中';
+        setTimeout(() => { btn.textContent = '复制'; }, 2000);
+    });
 }
 
 // ── Banner ─────────────────────────────────────────────────
