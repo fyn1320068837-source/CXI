@@ -523,9 +523,21 @@ async function testProxy() {
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({}) });
         const d = await r.json();
-        renderProxy(d);
+        if (d.healthy) {
+            renderProxy({
+                healthy: true,
+                exit_ip: d.exit_ip,
+                latency_ms: d.latency_ms,
+                geo: d.geo
+            });
+            hideBanner();
+        } else {
+            renderProxy({ healthy: false, exit_ip: null, latency_ms: null, geo: null });
+            const reason = d.error || '未知错误';
+            showBanner('代理测试失败：' + reason + (d.detail ? ' — ' + d.detail : ''));
+        }
     } catch (e) {
-        showBanner('代理测试失败：' + e.message);
+        showBanner('请求失败：' + e.message);
     } finally {
         btn.disabled = false;
         btn.textContent = '测试连接';

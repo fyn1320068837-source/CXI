@@ -151,20 +151,67 @@ async fn get_status(
 
 #[derive(Deserialize)]
 struct ProxyTestRequest {
-    host: String,
-    port: u16,
+    host: Option<String>,
+    port: Option<u16>,
     username: Option<String>,
     password: Option<String>,
 }
 
-async fn test_proxy(Json(_payload): Json<ProxyTestRequest>) -> Json<ProxyStatus> {
-    // TODO: Implement proxy testing
-    Json(ProxyStatus {
-        healthy: false,
-        exit_ip: None,
-        latency_ms: None,
-        geo: None,
-    })
+async fn test_proxy(
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
+    body: Option<Json<ProxyTestRequest>>,
+) -> Json<serde_json::Value> {
+    // 实际探测：经 127.0.0.1:7890 请求出口 IP
+    let client = match reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http("http://127.0.0.1:7890").unwrap())
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return Json(serde_json::json!({
+            "healthy": false,
+            "error": format!("Failed to build client: {}", e)
+        })),
+    };
+
+    let start = std::time::Instant::now();
+    match client.get("https://api.ipify.org").send().await {
+        Ok(resp) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            match resp.text().await {
+                Ok(ip) => {
+                    let ip = ip.trim().to_string();
+                    Json(serde_json::json!({
+                        "healthy": true,
+                        "exit_ip": ip,
+                        "latency_ms": latency_ms,
+                        "geo": null
+                    }))
+                }
+                Err(e) => Json(serde_json::json!({
+                    "healthy": false,
+                    "error": format!("Failed to read response: {}", e)
+                })),
+            }
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let reason = if msg.contains("timed out") {
+                "PROXY_TIMEOUT"
+            } else if msg.contains("auth") || msg.contains("407") {
+                "PROXY_AUTH_FAILED"
+            } else if msg.contains("connection refused") {
+                "PROXY_NOT_RUNNING"
+            } else {
+                "PROXY_ERROR"
+            };
+            Json(serde_json::json!({
+                "healthy": false,
+                "error": reason,
+                "detail": msg
+            }))
+        }
+    }
 }
 
 async fn launch_instance(
