@@ -21,6 +21,7 @@
 ./tests/test_m5_storage.sh     # M5 存储验证
 ./tests/test_m6_integration.sh # M6 完整生命周期
 ./tests/test_verifier.sh       # 网络验证器
+./tests/real_proxy_integration.sh # 真实代理联调（需 CIM_RUN_REAL_PROXY=1）
 ```
 
 ---
@@ -41,7 +42,8 @@ WEB_PID=$(ps aux | grep "Chrome.*user-data-dir.*web" | grep -v grep | head -1 | 
 lsof -a -i TCP -p $WEB_PID -n -P | grep ESTABLISHED
 ```
 
-**预期**：所有 ESTABLISHED 连接对端为 `127.0.0.1:7891`
+**预期**：所有外部 TCP/UDP 连接对端为 `127.0.0.1:7890/7891`，本地监听或 mDNS
+按 LOCAL 分类。
 
 **实测**：✅ Chrome 进程连接通过 SOCKS5 代理
 
@@ -55,9 +57,10 @@ lsof -a -i TCP -p $WEB_PID -n -P | grep ESTABLISHED
 ./tests/chaos/inject-proxy-failure.sh
 ```
 
-**预期**：实例状态变为 `frozen`，无 DIRECT 连接
+**预期**：代理状态变为 unhealthy，已安装 PF 时加载 block anchor；新实例启动被拒绝，
+无 DIRECT 连接。
 
-**实测**：✅ 健康检查检测到进程退出并触发 fail-closed
+**实测**：✅ 健康检查检测到进程退出并触发 fail-closed 状态
 
 ---
 
@@ -71,7 +74,7 @@ lsof -a -i TCP -p $WEB_PID -n -P | grep ESTABLISHED
 tail -f ~/.cim/logs/daemon.log | grep "auth\|fail\|closed"
 ```
 
-**预期**：连续 2 次健康检查失败后触发 fail-closed
+**预期**：连续 3 次健康检查失败后触发 fail-closed
 
 ---
 
@@ -165,13 +168,13 @@ stat -f "%Sm %N" ~/Library/Application\ Support/Google/Chrome/Default/Preference
 # 搜索明文密码
 grep -r "password" ~/.cim --include="*.toml" --include="*.json" --include="*.log" | grep -v "keychain_ref"
 
-# 检查 sing-box 配置是否被删除（启动后 10s）
+# 检查 sing-box 运行配置权限
 ls -la ~/.cim/sing-box/config.json
 ```
 
 **预期**：
 - `config.toml` 中无密码字段值
-- sing-box 配置含密码时为临时文件，启动后删除
+- sing-box 运行配置权限为 0600，Keychain 查询失败时只作为已有配置的迁移回退
 
 **实测**：✅ 配置设计正确（Keychain 存储密码，配置文件无明文）
 
@@ -190,7 +193,7 @@ sleep 3
 curl -s http://localhost:8080/api/status | jq '.instances[] | select(.kind=="web") | .validation'
 ```
 
-**预期**：返回 `"unknown"`（空闲无连接时不能标 PASS）
+**预期**：无活跃连接返回 `"unknown"`；有本地代理连接返回 `"pass"`，直连则为 `"fail"`
 
 **实测**：✅ 返回 `"unknown"`
 

@@ -12,7 +12,18 @@ CIM 使用 macOS PF (Packet Filter) 提供内核级网络隔离兜底。这是�
 
 ## 安装步骤
 
-### 1. 创建辅助组
+### 1. 运行安装命令
+
+守护进程不会自动修改 /etc/pf.conf 或启用系统 PF。先运行：
+
+~~~
+cim install-firewall
+~~~
+
+该命令会创建 cimgrp（或配置中的 isolation_group）、写入
+/etc/pf.anchors/com.cim.block 并做语法检查。它需要可用的 sudo 权限。
+
+### 2. 创建辅助组（手工安装时）
 
 ```bash
 sudo dscl . -create /Groups/cimgrp
@@ -20,32 +31,31 @@ sudo dscl . -create /Groups/cimgrp PrimaryGroupID 999
 sudo dscl . -create /Groups/cimgrp RealName "CIM Isolation Group"
 ```
 
-### 2. 复制 PF 规则文件
+### 3. 复制 PF 规则文件（手工安装时）
 
 ```bash
-sudo cp pf.allow.example /etc/pf.anchors/com.cim.allow
 sudo cp pf.block.example /etc/pf.anchors/com.cim.block
-sudo chmod 644 /etc/pf.anchors/com.cim.*
+sudo chmod 644 /etc/pf.anchors/com.cim.block
 ```
 
-### 3. 配置主 PF 文件
+### 4. 配置主 PF 文件
 
 编辑 `/etc/pf.conf`，在文件末尾添加：
 
 ```pf
 # CIM anchor
 anchor "com.cim"
-load anchor "com.cim" from "/etc/pf.anchors/com.cim.allow"
+load anchor "com.cim" from "/etc/pf.anchors/com.cim.block"
 ```
 
-### 4. 重新加载 PF
+### 5. 重新加载 PF
 
 ```bash
 sudo pfctl -f /etc/pf.conf
 sudo pfctl -e  # 如果 PF 未启用
 ```
 
-### 5. 配置 sudoers (可选)
+### 6. 配置 sudoers (可选)
 
 允许守护进程无密码切换 PF 规则：
 
@@ -73,24 +83,28 @@ sudo pfctl -a com.cim -s rules
 
 ### 正常态 (allow)
 
-默认状态，不额外阻断任何流量。验证由 lsof 进程级检测完成。
+代理健康并完成出口 IP/GeoIP 解析后，CIM 执行 pfctl -a com.cim -F rules
+清空自身 anchor，实例可访问本地 127.0.0.1:7890/7891，验证由 lsof
+进程级检测完成。
 
 ### 故障态 (block)
 
-当代理故障时，CIM 守护进程执行：
+当代理进程退出或连续三次出口探测失败时，CIM 守护进程执行：
 
 ```bash
 sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
 ```
 
-此规则集阻断 `cimgrp` 组成员的所有非本地出站连接。
+此规则集阻断 cimgrp 组成员的所有非本地 TCP/UDP 出站连接，只保留回环，
+因此实例无法在代理断开后直连。实例启动时会尝试使用 cimgrp 作为有效组；
+没有该组时状态会保持为软隔离模式。
 
 ### 恢复
 
-代理恢复后，切回 allow 规则：
+代理恢复并通过出口探测后，切回 allow 状态：
 
 ```bash
-sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.allow
+sudo pfctl -a com.cim -F rules
 ```
 
 ## 兼容性注意
@@ -120,7 +134,7 @@ macOS 系统升级可能重置 `/etc/pf.conf`。升级后需：
 grep "com.cim" /etc/pf.conf
 
 # 如无，重新添加
-sudo sh -c 'echo "\nanchor \"com.cim\"\nload anchor \"com.cim\" from \"/etc/pf.anchors/com.cim.allow\"" >> /etc/pf.conf'
+sudo sh -c 'echo "\nanchor \"com.cim\"\nload anchor \"com.cim\" from \"/etc/pf.anchors/com.cim.block\"" >> /etc/pf.conf'
 sudo pfctl -f /etc/pf.conf
 ```
 

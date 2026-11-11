@@ -1,26 +1,35 @@
 // VS Code Claude extension adapter (Instance C)
-use super::{InstanceAdapter, InstanceKind, ProcessHandle, CapabilityReport, ValidationReport, ValidationStatus};
-use anyhow::{Result, Context};
+use super::{
+    apply_isolation_group, apply_locale_env, descendant_pids, CapabilityReport, InstanceAdapter,
+    ProcessHandle,
+};
+use crate::geoip::SharedGeoProfile;
+use anyhow::Result;
 use async_trait::async_trait;
 use std::process::Command;
 
 pub struct VsCodeAdapter {
     user_data_dir: String,
     extensions_dir: String,
+    geo_profile: SharedGeoProfile,
 }
 
 impl VsCodeAdapter {
-    pub fn new(user_data_dir: String, extensions_dir: String) -> Self {
-        Self { user_data_dir, extensions_dir }
+    pub fn new_with_geo_profile(
+        user_data_dir: String,
+        extensions_dir: String,
+        geo_profile: SharedGeoProfile,
+    ) -> Self {
+        Self {
+            user_data_dir,
+            extensions_dir,
+            geo_profile,
+        }
     }
 }
 
 #[async_trait]
 impl InstanceAdapter for VsCodeAdapter {
-    fn kind(&self) -> InstanceKind {
-        InstanceKind::VsCode
-    }
-
     async fn detect(&self) -> CapabilityReport {
         // Check if `code` CLI is available
         let output = Command::new("which").arg("code").output();
@@ -38,7 +47,7 @@ impl InstanceAdapter for VsCodeAdapter {
                 installed: false,
                 version: None,
                 path: None,
-            }
+            },
         }
     }
 
@@ -49,7 +58,7 @@ impl InstanceAdapter for VsCodeAdapter {
 
         // Install Claude extension
         Command::new("code")
-            .args(&[
+            .args([
                 "--install-extension",
                 "anthropic.claude-code",
                 "--extensions-dir",
@@ -61,20 +70,25 @@ impl InstanceAdapter for VsCodeAdapter {
     }
 
     async fn launch(&self) -> Result<ProcessHandle> {
-        let child = Command::new("code")
-            .args(&[
-                "--user-data-dir",
-                &self.user_data_dir,
-                "--extensions-dir",
-                &self.extensions_dir,
-                "--proxy-server=http://127.0.0.1:7890",
-                "--new-window",
-            ])
-            .spawn()?;
+        let profile = self.geo_profile.read().await.clone();
+        let mut command = Command::new("code");
+        command.args([
+            "--user-data-dir",
+            &self.user_data_dir,
+            "--extensions-dir",
+            &self.extensions_dir,
+            "--proxy-server=http://127.0.0.1:7890",
+            "--new-window",
+        ]);
+        if let Some(language) = profile.language.as_deref() {
+            command.arg("--locale").arg(language);
+        }
+        apply_locale_env(&mut command, &profile);
+        apply_isolation_group(&mut command);
+        let child = command.spawn()?;
 
         Ok(ProcessHandle {
             root_pid: child.id(),
-            kind: InstanceKind::VsCode,
         })
     }
 
@@ -92,13 +106,6 @@ impl InstanceAdapter for VsCodeAdapter {
     }
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
-        vec![handle.root_pid]
-    }
-
-    async fn verify_network(&self, _handle: &ProcessHandle) -> ValidationReport {
-        ValidationReport {
-            status: ValidationStatus::Unknown,
-            details: "Network verification not yet implemented".to_string(),
-        }
+        descendant_pids(handle.root_pid)
     }
 }

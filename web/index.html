@@ -354,6 +354,14 @@
                 <span class="val" id="proxy-geo">—</span>
             </div>
             <div class="proxy-row">
+                <span class="lbl">时区</span>
+                <span class="val" id="proxy-timezone">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">语言 / Locale</span>
+                <span class="val" id="proxy-language">—</span>
+            </div>
+            <div class="proxy-row">
                 <span class="lbl">延迟</span>
                 <span class="val" id="proxy-latency">—</span>
             </div>
@@ -361,6 +369,9 @@
                 <button class="btn btn-primary" onclick="testProxy()">测试连接</button>
                 <button class="btn btn-secondary" onclick="openProxyModal()">配置代理</button>
                 <button class="btn btn-secondary" id="btn-restart" onclick="restartProxy()">重启服务</button>
+            </div>
+            <div style="margin-top:.55rem;color:var(--muted);font-size:.78rem">
+                时区和语言仅对之后启动的 Code、VS Code、Web 实例生效；Desktop 软隔离模式不自动覆盖。
             </div>
         </div>
     </section>
@@ -705,6 +716,11 @@ function renderProxy(p) {
         p.exit_ip || '—';
     document.getElementById('proxy-geo').textContent =
         p.geo ? (p.geo.country + (p.geo.city ? ' · ' + p.geo.city : '')) : '—';
+    document.getElementById('proxy-timezone').textContent =
+        p.geo?.timezone || '—';
+    document.getElementById('proxy-language').textContent = p.geo
+        ? [p.geo.language, p.geo.locale].filter(Boolean).join(' · ') || '—'
+        : '—';
     document.getElementById('proxy-latency').textContent =
         p.latency_ms != null ? p.latency_ms + ' ms' : '—';
 }
@@ -727,6 +743,7 @@ function renderInstance(inst) {
             pass: 'pass', fail: 'fail', unknown: 'grey', unsupported: 'grey'
         }[inst.validation] || 'grey';
         valEl.innerHTML = badge(cls, inst.validation.toUpperCase());
+        valEl.title = inst.validation_details || '';
     }
 
     // button states

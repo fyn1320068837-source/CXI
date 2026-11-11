@@ -1,5 +1,5 @@
 // Configuration module - TOML config parsing
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -56,7 +56,10 @@ impl Config {
         if config_path.exists() {
             Self::load_from_file(&config_path)
         } else {
-            info!("Config file not found, creating default at {:?}", config_path);
+            info!(
+                "Config file not found, creating default at {:?}",
+                config_path
+            );
             let config = Self::default();
             config.save()?;
             Ok(config)
@@ -68,8 +71,7 @@ impl Config {
         let content = std::fs::read_to_string(path)
             .context(format!("Failed to read config file: {:?}", path))?;
 
-        let config: Config = toml::from_str(&content)
-            .context("Failed to parse config file")?;
+        let config: Config = toml::from_str(&content).context("Failed to parse config file")?;
 
         Ok(config)
     }

@@ -7,7 +7,7 @@ CIM (Claude Instance Manager) 是一个 macOS 原生守护进程，用于统一�
 ### 核心设计原则
 
 1. **单一出口**: 所有实例流量汇聚到本地 sing-box 网关，再经住宅 SOCKS5 代理出站
-2. **进程级验证**: 使用 lsof 枚举每个进程的实际 TCP 连接
+2. **进程级验证**: 使用 lsof 枚举每个进程的实际 TCP/UDP 连接
 3. **fail-closed**: 代理故障时冻结实例并阻断网络（PF 规则）
 4. **配置隔离**: 四实例使用独立目录，与日常环境完全分离
 5. **零信任验证**: UNKNOWN ≠ PASS，无证据不标 PASS
@@ -47,7 +47,7 @@ CIM (Claude Instance Manager) 是一个 macOS 原生守护进程，用于统一�
 │  └─────────────────────────────────────────┘    │
 │  ┌─────────────────────────────────────────┐    │
 │  │ Network Verifier                        │    │
-│  │ - lsof 枚举连接 (每 30 秒)               │    │
+│  │ - lsof 枚举连接 (状态请求时)              │    │
 │  │ - 分类: PROXIED / LOCAL / DIRECT        │    │
 │  │ - 状态机: PASS / FAIL / UNKNOWN         │    │
 │  └─────────────────────────────────────────┘    │
@@ -109,17 +109,18 @@ impl ProxyManager {
 ```
 
 **健康检查**:
-- 间隔: 每 15 秒
-- 方法: 经 `127.0.0.1:7890` 请求 `https://api.ipify.org`
-- 超时: 5 秒
-- 触发 fail-closed: 连续 2 次失败
+- 间隔: 配置中的 `health_check_interval`（默认 15 秒）
+- 方法: 经 `127.0.0.1:7891` 的 SOCKS5 入口请求出口 IP
+- 超时: 配置中的 `health_check_timeout`（默认 5 秒）
+- 触发 fail-closed: sing-box 退出立即触发；出口探测连续 3 次失败触发
+- 恢复条件: 出口 IP 探测成功，并重新解析 GeoIP
 
 **sing-box 配置生成**:
 1. 从 Keychain 读取代理密码
 2. 渲染配置模板 (JSON)
-3. 写入临时文件 (0600 权限)
+3. 写入 0600 运行时配置
 4. 启动 sing-box
-5. 10 秒后删除配置文件 (sing-box 已读入内存)
+5. Keychain 查询受超时保护，已有运行配置仅作为迁移回退
 
 ### 3. Instance Adapters
 
@@ -127,13 +128,11 @@ impl ProxyManager {
 ```rust
 #[async_trait]
 trait InstanceAdapter {
-    fn kind(&self) -> InstanceKind;
     async fn detect(&self) -> CapabilityReport;
     async fn prepare(&self) -> Result<()>;
     async fn launch(&self) -> Result<ProcessHandle>;
     async fn stop(&self, handle: &ProcessHandle) -> Result<()>;
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32>;
-    async fn verify_network(&self, handle: &ProcessHandle) -> ValidationReport;
 }
 ```
 
@@ -196,14 +195,14 @@ chromium --user-data-dir=$HOME/.cim/instances/chromium \
 
 ### 4. Network Verifier
 
-**验证流程** (每 30 秒):
+**验证流程**（每次 `/api/status` 请求）:
 
 ```
 1. process_tree(root_pid) → [pid1, pid2, ...]
 2. 对每个 PID:
-   lsof -a -i TCP -p <pid> -n -P
-3. 分类每条 ESTABLISHED 连接:
-   - 127.0.0.1:7890/7891 → PROXIED ✓
+   lsof -a -i -p <pid> -n -P
+3. 分类每条 TCP/UDP 连接:
+   - 127.0.0.1:7890/7891（含 IPv6 loopback）→ PROXIED ✓
    - 127.0.0.1/::1 其他   → LOCAL ✓
    - 10.*/172.16.*/192.168.* → LAN (可配)
    - 其他公网 IP           → DIRECT ✗
@@ -211,7 +210,7 @@ chromium --user-data-dir=$HOME/.cim/instances/chromium \
    - 有 DIRECT → FAIL
    - 全 PROXIED/LOCAL 且 ≥1 PROXIED → PASS
    - 无连接 → UNKNOWN
-   - lsof 失败 → UNKNOWN
+   - lsof 失败 → FAIL（无法证明隔离）
 ```
 
 **验证证据存储**:
@@ -262,14 +261,25 @@ pub fn get_password(service: &str, account: &str) -> Result<String>;
 **GeoRecord 结构**:
 ```rust
 pub struct GeoRecord {
+    pub country_code: Option<String>,
     pub country: String,
     pub city: Option<String>,
     pub timezone: Option<String>,  // IANA 时区
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub asn: Option<String>,
     pub provider: String,
     pub confidence: Option<f32>,
 }
 ```
+
+GeoIP 解析在代理健康检查成功后执行，结果写入共享运行时 profile。新启动的
+Code/VS Code 子进程会继承 `TZ`、`LANG` 和 `LC_ALL`；VS Code 还接收
+`--locale`。Web 实例使用 `--lang`，并通过本地 Chrome DevTools 覆盖时区和
+IP 地理位置。Desktop 当前是软隔离模式，不能可靠应用这些覆盖。
+
+GeoIP 查询失败时保留同一出口 IP 的上一次成功 profile，并按 30 秒限流重试；
+出口 IP 变化会先清理旧的国家、时区和语言，避免沿用过期位置。
 
 ## 状态机
 
@@ -294,30 +304,26 @@ UNKNOWN → (检测到连接) → PASS / FAIL
 ```
 触发条件:
 - sing-box 进程退出
-- 健康检查连续 2 次失败
-- 网络接口变化
+- 健康检查连续 3 次失败
 
-动作 (10 秒内):
-1. [已装 PF] pfctl -a com.cim -f com.cim.block
-2. 向所有 RUNNING 实例发 SIGSTOP (冻结)
-3. 控制台推送 BLOCKED 状态
-4. macOS 通知告警
+动作:
+1. [已安装 PF] 将 `com.cim.block` 加载到 anchor
+2. API 阻止新的实例启动，lsof 验证继续显示故障
+3. 控制台显示 PF 故障阻断或软隔离状态
 
 恢复:
-1. sing-box 重启 / 网络恢复
-2. 重测出口 IP
-3. 用户确认出口未变
-4. pfctl 切回 allow 规则
-5. 用户手动 SIGCONT 解冻实例
+1. sing-box 重启或网络恢复
+2. 重测出口 IP 并刷新 GeoIP
+3. 清空 CIM anchor 规则，允许新实例启动
 ```
 
 ## 安全设计
 
 ### 1. 凭据保护
 
-- 代理密码: macOS Keychain
+- 代理密码长期存储: macOS Keychain
 - SQLite 仅存 `keychain_ref`
-- sing-box 配置临时文件: 0600 权限，10 秒后删除
+- sing-box 运行配置: 0600 权限，Keychain 查询优先
 
 ### 2. Claude 凭据零接触
 
@@ -364,7 +370,7 @@ sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
 | 守护进程内存 | < 50 MB | TBD |
 | 代理转发延迟 | < 10 ms | TBD |
 | 控制台首屏 | < 1 s | TBD |
-| 验证周期 | 30 s | 30 s |
+| 验证周期 | 30 s | API 请求时执行 |
 | 健康检查周期 | 15 s | 15 s |
 | fail-closed 响应 | < 10 s | TBD |
 
@@ -373,14 +379,14 @@ sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
 ### 1.0 必须解决
 
 - [ ] Desktop VM 自动化程度（目前为手动配置）
-- [ ] 进程树枚举完整性（ppid 递归）
-- [ ] lsof 解析健壮性（各种输出格式）
+- [x] 进程树枚举完整性（ppid 递归）
+- [x] lsof 解析健壮性（TCP/UDP、IPv4/IPv6）
 - [ ] PF 规则与已有 VPN 冲突检测
 
 ### 1.0.x
 
 - [ ] 结构化日志 (tracing-appender)
-- [ ] 时区/Locale 自动推荐
+- [x] 根据出口 IP 推荐并应用时区/Locale（Code、VS Code、Web）
 - [ ] 异常通知 (macOS Notification Center)
 - [ ] 诊断报告导出 (ZIP)
 

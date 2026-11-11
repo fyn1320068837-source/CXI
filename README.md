@@ -35,7 +35,9 @@ launchctl load    ~/Library/LaunchAgents/com.cim.daemon.plist
 sudo cim install-firewall
 ```
 
-提供内核级断线保护（PF anchor，按 `cimgrp` 组阻断）。未安装时为软隔离模式。
+提供内核级断线保护（PF anchor，按 `cimgrp` 组阻断）。安装命令会写入
+`/etc/pf.anchors/com.cim.block`；还需要按输出提示把 anchor 加入 `/etc/pf.conf`。
+未安装时为软隔离模式。
 
 ---
 
@@ -75,7 +77,7 @@ sudo cim install-firewall
 │   └── daemon.log            # 守护进程日志
 ├── sing-box/
 │   ├── sing-box              # 代理网关二进制
-│   └── config.json           # 运行时生成（含密码，0600 权限，启动后 10s 删除）
+│   └── config.json           # 运行时生成（含密码，0600 权限；Keychain 优先）
 └── instances/
     ├── code/                 # A 实例 HOME
     ├── vscode/               # C 实例 user-data + extensions
@@ -102,11 +104,25 @@ WS   /ws                                实时状态推送
 
 ## 安全特性
 
-- **密码零存储**：SOCKS5 密码仅写入 macOS Keychain
-- **配置临时文件**：sing-box 配置含密码，0600 权限，启动后 10 秒删除
+- **密码长期存储**：SOCKS5 密码优先写入 macOS Keychain
+- **运行配置权限**：sing-box 运行配置含密码时为 0600；Keychain 查询受超时保护，已有配置仅作迁移回退
 - **日志脱敏**：IP 保留前两段，密码全遮蔽
 - **Claude 凭据零接触**：代码禁止打开任何实例的 Cookies / credentials 路径
 - **HTTP 仅本地**：API 只绑 `127.0.0.1`，不对外暴露
+
+## 出口 IP 默认环境
+
+守护进程通过 SOCKS5 网关获取真实出口 IP，并经 GeoIP 查询得到国家、城市、
+IANA 时区和语言推荐。该配置只作用于 CIM 新启动的隔离实例，不修改 macOS
+主机的系统设置：
+
+- Code：设置 `TZ`、`LANG` 和 `LC_ALL`
+- VS Code：设置上述环境变量，并传入对应的 `--locale`
+- Web：设置上述环境变量、浏览器语言，并通过 Chrome DevTools 覆盖时区和 IP 定位
+- Desktop：软隔离模式无法可靠注入环境，仍标记为不支持自动应用
+
+GeoIP 查询失败时不会猜测位置：同一出口 IP 会暂时保留最近一次成功 profile，
+出口 IP 变化则清理旧 profile；控制台会显示当前已解析的出口 IP、地理位置、时区和语言/Locale。
 
 ---
 
@@ -127,6 +143,14 @@ WS   /ws                                实时状态推送
 - 实例可能处于空闲状态（无活跃网络连接）
 - 属于正常现象，不代表隔离失效
 - 触发一次网络请求后会更新为 PASS 或 FAIL
+
+真实代理联调（会启动实际实例）可手工运行：
+
+```bash
+CIM_RUN_REAL_PROXY=1 tests/real_proxy_integration.sh
+```
+
+默认只启动 Web；可用 `CIM_REAL_PROXY_INSTANCES=code,vscode,web` 指定实例集合。
 
 **如何完全卸载**
 ```bash

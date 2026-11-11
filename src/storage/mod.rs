@@ -1,10 +1,11 @@
 // Storage - SQLite + Keychain integration
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceState {
     pub id: i64,
@@ -22,7 +23,9 @@ pub struct Storage {
 impl Storage {
     pub fn new(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)?;
-        let storage = Self { conn: Mutex::new(conn) };
+        let storage = Self {
+            conn: Mutex::new(conn),
+        };
         storage.initialize_schema()?;
         Ok(storage)
     }
@@ -79,11 +82,12 @@ impl Storage {
                 actor TEXT,
                 details TEXT NOT NULL
             );
-            "#
+            "#,
         )?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn save_proxy_profile(
         &self,
         name: &str,
@@ -104,7 +108,13 @@ impl Storage {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn log_audit_event(&self, event_type: &str, actor: Option<&str>, details: &str) -> Result<()> {
+    #[allow(dead_code)]
+    pub fn log_audit_event(
+        &self,
+        event_type: &str,
+        actor: Option<&str>,
+        details: &str,
+    ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
 
@@ -138,6 +148,7 @@ impl Storage {
         Ok(conn.last_insert_rowid())
     }
 
+    #[allow(dead_code)]
     pub fn get_instance_state(&self, kind: &str) -> Result<Option<InstanceState>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -166,20 +177,22 @@ impl Storage {
 // Keychain integration (macOS only)
 #[cfg(target_os = "macos")]
 pub mod keychain {
-    use security_framework::passwords::*;
     use anyhow::Result;
+    use security_framework::passwords::*;
 
     pub fn save_password(service: &str, account: &str, password: &str) -> Result<()> {
         set_generic_password(service, account, password.as_bytes())?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_password(service: &str, account: &str) -> Result<String> {
         let password_bytes = get_generic_password(service, account)?;
         let password = String::from_utf8(password_bytes)?;
         Ok(password)
     }
 
+    #[allow(dead_code)]
     pub fn delete_password(_service: &str, _account: &str) -> Result<()> {
         // TODO: Implement deletion
         Ok(())

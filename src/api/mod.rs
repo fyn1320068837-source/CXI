@@ -1,17 +1,18 @@
 // API Server module - HTTP REST + WebSocket endpoints
+use crate::geoip::{GeoProfile, SharedGeoProfile};
+use crate::instance::{InstanceKind, InstanceManager, ValidationStatus};
+use crate::proxy::ProxyManager;
+use crate::storage::Storage;
 use axum::{
-    Router,
-    routing::{get, post},
-    response::{Html, IntoResponse},
-    Json,
     extract::ws::{WebSocket, WebSocketUpgrade},
+    response::{Html, IntoResponse},
+    routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tower_http::services::ServeDir;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use crate::instance::{InstanceManager, InstanceKind};
-use crate::storage::Storage;
+use tower_http::services::ServeDir;
 
 // Global state for broadcasting updates
 #[derive(Clone)]
@@ -19,6 +20,8 @@ pub struct AppState {
     pub tx: broadcast::Sender<String>,
     pub instance_manager: Arc<RwLock<InstanceManager>>,
     pub log_buffer: Arc<RwLock<Vec<LogEntry>>>,
+    pub geo_profile: SharedGeoProfile,
+    pub proxy_manager: Arc<ProxyManager>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,15 +35,28 @@ pub struct LogEntry {
     pub size_bytes: u64,
 }
 
-pub async fn create_router(storage: Arc<Storage>) -> Router {
+pub async fn create_router(
+    storage: Arc<Storage>,
+    geo_profile: SharedGeoProfile,
+    proxy_manager: Arc<ProxyManager>,
+    allow_lan: bool,
+) -> Router {
     let (tx, _rx) = broadcast::channel(100);
     let log_buffer: Arc<RwLock<Vec<LogEntry>>> = Arc::new(RwLock::new(Vec::new()));
 
     let instance_manager = Arc::new(RwLock::new(
-        InstanceManager::new().with_storage(storage)
+        InstanceManager::with_geo_profile(geo_profile.clone())
+            .with_allow_lan(allow_lan)
+            .with_storage(storage),
     ));
 
-    let state = AppState { tx, instance_manager, log_buffer };
+    let state = AppState {
+        tx,
+        instance_manager,
+        log_buffer,
+        geo_profile,
+        proxy_manager,
+    };
 
     Router::new()
         .route("/", get(serve_index))
@@ -84,21 +100,57 @@ struct ProxyStatus {
 
 #[derive(Serialize)]
 struct GeoInfo {
+    source_ip: Option<String>,
+    country_code: Option<String>,
     country: String,
     city: Option<String>,
+    timezone: Option<String>,
+    language: Option<String>,
+    locale: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
+fn geo_info_from_profile(profile: &GeoProfile) -> GeoInfo {
+    GeoInfo {
+        source_ip: profile.source_ip.clone(),
+        country_code: profile.country_code.clone(),
+        country: profile.country.clone().unwrap_or_default(),
+        city: profile.city.clone(),
+        timezone: profile.timezone.clone(),
+        language: profile.language.clone(),
+        locale: profile.locale.clone(),
+        latitude: profile.latitude,
+        longitude: profile.longitude,
+    }
 }
 
 #[derive(Serialize)]
 struct InstanceStatus {
     kind: String,
     status: String,
+    pid: Option<u32>,
     validation: String,
+    validation_details: String,
 }
 
 #[derive(Serialize)]
 struct FirewallStatus {
     installed: bool,
+    mode: String,
     status: String,
+    anchor: String,
+    isolation_group: String,
+    last_error: Option<String>,
+}
+
+fn validation_name(status: &ValidationStatus) -> &'static str {
+    match status {
+        ValidationStatus::Pass => "pass",
+        ValidationStatus::Fail => "fail",
+        ValidationStatus::Unknown => "unknown",
+        ValidationStatus::Unsupported => "unsupported",
+    }
 }
 
 async fn get_status(
@@ -106,34 +158,73 @@ async fn get_status(
 ) -> Json<StatusResponse> {
     let manager = state.instance_manager.read().await;
     let status_map = manager.status_all().await;
+    let pid_map = manager.pid_all().await;
+    let validation_map = manager.validation_all().await;
+    let geo_profile = state.geo_profile.read().await.clone();
+    let firewall = state.proxy_manager.firewall_status();
+    let proxy_healthy = state.proxy_manager.is_healthy() && geo_profile.is_resolved();
+
+    let validation_for = |kind: InstanceKind| {
+        validation_map
+            .get(&kind)
+            .map(|value| {
+                (
+                    validation_name(&value.status).to_string(),
+                    value.details.clone(),
+                )
+            })
+            .unwrap_or_else(|| ("unknown".to_string(), "validation unavailable".to_string()))
+    };
+    let (code_validation, code_validation_details) = validation_for(InstanceKind::Code);
+    let (desktop_validation, desktop_validation_details) = validation_for(InstanceKind::Desktop);
+    let (vscode_validation, vscode_validation_details) = validation_for(InstanceKind::VsCode);
+    let (web_validation, web_validation_details) = validation_for(InstanceKind::Web);
 
     let instances = vec![
         InstanceStatus {
             kind: "code".to_string(),
-            status: if status_map.get(&InstanceKind::Code).copied().unwrap_or(false) {
+            status: if status_map
+                .get(&InstanceKind::Code)
+                .copied()
+                .unwrap_or(false)
+            {
                 "running".to_string()
             } else {
                 "stopped".to_string()
             },
-            validation: "unknown".to_string(),
+            pid: pid_map.get(&InstanceKind::Code).copied().flatten(),
+            validation: code_validation,
+            validation_details: code_validation_details,
         },
         InstanceStatus {
             kind: "desktop".to_string(),
-            status: if status_map.get(&InstanceKind::Desktop).copied().unwrap_or(false) {
+            status: if status_map
+                .get(&InstanceKind::Desktop)
+                .copied()
+                .unwrap_or(false)
+            {
                 "running".to_string()
             } else {
                 "stopped".to_string()
             },
-            validation: "unsupported".to_string(),
+            pid: pid_map.get(&InstanceKind::Desktop).copied().flatten(),
+            validation: desktop_validation,
+            validation_details: desktop_validation_details,
         },
         InstanceStatus {
             kind: "vscode".to_string(),
-            status: if status_map.get(&InstanceKind::VsCode).copied().unwrap_or(false) {
+            status: if status_map
+                .get(&InstanceKind::VsCode)
+                .copied()
+                .unwrap_or(false)
+            {
                 "running".to_string()
             } else {
                 "stopped".to_string()
             },
-            validation: "unknown".to_string(),
+            pid: pid_map.get(&InstanceKind::VsCode).copied().flatten(),
+            validation: vscode_validation,
+            validation_details: vscode_validation_details,
         },
         InstanceStatus {
             kind: "web".to_string(),
@@ -142,24 +233,31 @@ async fn get_status(
             } else {
                 "stopped".to_string()
             },
-            validation: "unknown".to_string(),
+            pid: pid_map.get(&InstanceKind::Web).copied().flatten(),
+            validation: web_validation,
+            validation_details: web_validation_details,
         },
     ];
 
     Json(StatusResponse {
         proxy: ProxyStatus {
-            healthy: true,
-            exit_ip: Some("68.170.3.93".to_string()),
-            latency_ms: Some(150),
-            geo: Some(GeoInfo {
-                country: "US".to_string(),
-                city: Some("New York".to_string()),
-            }),
+            healthy: proxy_healthy,
+            exit_ip: geo_profile.source_ip.clone(),
+            latency_ms: None,
+            geo: if proxy_healthy && geo_profile.has_geo() {
+                Some(geo_info_from_profile(&geo_profile))
+            } else {
+                None
+            },
         },
         instances,
         firewall: FirewallStatus {
-            installed: false,
-            status: "软隔离模式".to_string(),
+            installed: firewall.installed,
+            mode: format!("{:?}", firewall.mode).to_lowercase(),
+            status: firewall.status,
+            anchor: firewall.anchor,
+            isolation_group: firewall.isolation_group,
+            last_error: firewall.last_error,
         },
     })
 }
@@ -167,42 +265,32 @@ async fn get_status(
 async fn restart_proxy(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    // 重启 sing-box：pkill + 守护进程会重新启动
-    let status = std::process::Command::new("pkill")
-        .arg("-f")
-        .arg("sing-box")
-        .status();
+    let _ = state.tx.send(r#"{"type":"proxy_restarting"}"#.to_string());
 
-    match status {
-        Ok(_) => {
-            // 等待 sing-box 被 proxy manager 重新拉起（2秒）
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            let _ = state.tx.send(r#"{"type":"proxy_restarting"}"#.to_string());
-
+    match state.proxy_manager.restart().await {
+        Ok(()) => {
+            match state.proxy_manager.refresh_geo_profile().await {
+                Ok(_) => state.proxy_manager.mark_healthy(),
+                Err(error) => {
+                    state.proxy_manager.mark_unhealthy();
+                    tracing::warn!("GeoIP refresh after proxy restart failed: {}", error);
+                }
+            }
+            let _ = state.tx.send(r#"{"type":"proxy_restarted"}"#.to_string());
             Json(serde_json::json!({
                 "success": true,
                 "message": "sing-box 已重启，新配置生效"
             }))
         }
-        Err(e) => Json(serde_json::json!({
+        Err(error) => Json(serde_json::json!({
             "success": false,
-            "message": format!("重启失败: {}", e)
+            "message": format!("重启失败: {}", error)
         })),
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ProxyConfigData {
-    pub host: String,
-    pub port: u16,
-    pub username: Option<String>,
-    // 密码不返回给前端，只接收保存
-    #[serde(skip_serializing)]
-    pub password: Option<String>,
-}
-
 async fn get_proxy_config(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     // 从配置文件读取（不含密码）
     let home = std::env::var("HOME").unwrap_or_default();
@@ -236,7 +324,7 @@ fn extract_toml_str(content: &str, key: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with(&format!("{} =", key)) || trimmed.starts_with(&format!("{}=", key)) {
-            if let Some(val) = trimmed.splitn(2, '=').nth(1) {
+            if let Some((_, val)) = trimmed.split_once('=') {
                 let val = val.trim().trim_matches('"').to_string();
                 if !val.is_empty() {
                     return Some(val);
@@ -260,7 +348,7 @@ struct SaveProxyRequest {
 }
 
 async fn save_proxy_config(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
     Json(payload): Json<SaveProxyRequest>,
 ) -> Json<serde_json::Value> {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -270,7 +358,8 @@ async fn save_proxy_config(
     let content = std::fs::read_to_string(&config_path).unwrap_or_default();
 
     // 更新或添加 [proxy] 下的 host/port/username
-    let new_content = update_proxy_in_toml(&content, &payload.host, payload.port, &payload.username);
+    let new_content =
+        update_proxy_in_toml(&content, &payload.host, payload.port, &payload.username);
 
     if let Err(e) = std::fs::write(&config_path, &new_content) {
         return Json(serde_json::json!({
@@ -305,8 +394,13 @@ fn update_proxy_in_toml(content: &str, host: &str, port: u16, username: &Option<
 
     for line in &mut lines {
         let trimmed = line.trim();
-        if trimmed == "[proxy]" { in_proxy = true; continue; }
-        if trimmed.starts_with('[') && trimmed != "[proxy]" { in_proxy = false; }
+        if trimmed == "[proxy]" {
+            in_proxy = true;
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed != "[proxy]" {
+            in_proxy = false;
+        }
 
         if in_proxy {
             if trimmed.starts_with("host") {
@@ -327,8 +421,12 @@ fn update_proxy_in_toml(content: &str, host: &str, port: u16, username: &Option<
 
     // 如果 [proxy] 区域没有这些字段，追加
     if in_proxy && (!host_set || !port_set || !user_set) {
-        if !host_set { lines.push(format!("host = \"{}\"", host)); }
-        if !port_set { lines.push(format!("port = {}", port)); }
+        if !host_set {
+            lines.push(format!("host = \"{}\"", host));
+        }
+        if !port_set {
+            lines.push(format!("port = {}", port));
+        }
         if !user_set {
             if let Some(u) = username {
                 lines.push(format!("username = \"{}\"", u));
@@ -339,26 +437,19 @@ fn update_proxy_in_toml(content: &str, host: &str, port: u16, username: &Option<
     lines.join("\n")
 }
 
-#[derive(Deserialize)]
-struct ProxyTestRequest {
-    host: Option<String>,
-    port: Option<u16>,
-    username: Option<String>,
-    password: Option<String>,
-}
-
 async fn test_proxy(
-    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
-    body: Option<Json<ProxyTestRequest>>,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     let start = std::time::Instant::now();
 
     // 用 curl + socks5，和健康检查保持一致，避免 HTTP 代理走直连
     let output = tokio::process::Command::new("curl")
-        .args(&[
+        .args([
             "-s",
-            "-x", "socks5://127.0.0.1:7891",
-            "--max-time", "8",
+            "-x",
+            "socks5://127.0.0.1:7891",
+            "--max-time",
+            "8",
             "https://ipv4.icanhazip.com",
         ])
         .output()
@@ -368,12 +459,30 @@ async fn test_proxy(
         Ok(out) if out.status.success() => {
             let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let latency_ms = start.elapsed().as_millis() as u64;
-            if !ip.is_empty() && ip.contains('.') {
+            if !ip.is_empty() {
+                let parsed_ip = match ip.parse::<std::net::IpAddr>() {
+                    Ok(parsed_ip) => parsed_ip,
+                    Err(error) => {
+                        return Json(serde_json::json!({
+                            "healthy": false,
+                            "error": "PROXY_INVALID_EXIT_IP",
+                            "detail": error.to_string()
+                        }));
+                    }
+                };
+                state.proxy_manager.mark_healthy();
+                let geo = match state.proxy_manager.refresh_geo_profile_for_ip(&ip).await {
+                    Ok(profile) => Some(geo_info_from_profile(&profile)),
+                    Err(error) => {
+                        tracing::warn!("GeoIP resolution failed for {}: {}", parsed_ip, error);
+                        None
+                    }
+                };
                 Json(serde_json::json!({
                     "healthy": true,
                     "exit_ip": ip,
                     "latency_ms": latency_ms,
-                    "geo": null
+                    "geo": geo
                 }))
             } else {
                 Json(serde_json::json!({
@@ -383,6 +492,7 @@ async fn test_proxy(
             }
         }
         Ok(out) => {
+            state.proxy_manager.mark_unhealthy();
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             let reason = if stderr.contains("timed out") || stderr.contains("Operation timed out") {
                 "PROXY_TIMEOUT"
@@ -399,11 +509,14 @@ async fn test_proxy(
                 "detail": stderr
             }))
         }
-        Err(e) => Json(serde_json::json!({
-            "healthy": false,
-            "error": "CURL_NOT_FOUND",
-            "detail": e.to_string()
-        })),
+        Err(e) => {
+            state.proxy_manager.mark_unhealthy();
+            Json(serde_json::json!({
+                "healthy": false,
+                "error": "CURL_NOT_FOUND",
+                "detail": e.to_string()
+            }))
+        }
     }
 }
 
@@ -431,6 +544,13 @@ async fn launch_instance(
         }
     };
 
+    if !state.proxy_manager.is_healthy() {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "代理当前不健康，已阻止实例启动"
+        }));
+    }
+
     let manager = state.instance_manager.read().await;
     match manager.launch(instance_kind).await {
         Ok(_) => {
@@ -442,12 +562,10 @@ async fn launch_instance(
                 "message": format!("{} instance launched successfully", kind)
             }))
         }
-        Err(e) => {
-            Json(serde_json::json!({
-                "success": false,
-                "message": format!("Failed to launch {}: {}", kind, e)
-            }))
-        }
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": format!("Failed to launch {}: {}", kind, e)
+        })),
     }
 }
 
@@ -479,12 +597,10 @@ async fn stop_instance(
                 "message": format!("{} instance stopped successfully", kind)
             }))
         }
-        Err(e) => {
-            Json(serde_json::json!({
-                "success": false,
-                "message": format!("Failed to stop {}: {}", kind, e)
-            }))
-        }
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": format!("Failed to stop {}: {}", kind, e)
+        })),
     }
 }
 
@@ -498,19 +614,22 @@ async fn websocket_handler(
 
 async fn websocket_connection(socket: WebSocket, state: Arc<AppState>) {
     use axum::extract::ws::Message;
-    use futures::stream::StreamExt;
     use futures::sink::SinkExt;
+    use futures::stream::StreamExt;
 
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.tx.subscribe();
 
     // Send initial connection message
-    let _ = sender.send(Message::Text(
-        serde_json::json!({
-            "type": "connected",
-            "message": "WebSocket connected"
-        }).to_string()
-    )).await;
+    let _ = sender
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "connected",
+                "message": "WebSocket connected"
+            })
+            .to_string(),
+        ))
+        .await;
 
     // Spawn task to send broadcasts to this client
     let mut send_task = tokio::spawn(async move {

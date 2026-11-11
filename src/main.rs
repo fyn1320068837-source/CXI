@@ -1,13 +1,14 @@
 mod api;
-mod proxy;
-mod instance;
-mod verifier;
-mod geoip;
-mod storage;
 mod config;
+mod firewall;
+mod geoip;
+mod instance;
+mod proxy;
+mod storage;
+mod verifier;
 
 use anyhow::Result;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,7 +16,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
 
@@ -32,7 +33,10 @@ async fn main() -> Result<()> {
         Some("stop-all") => stop_all_instances().await?,
         Some("status") => show_status().await?,
         _ => {
-            println!("CIM - Claude Instance Manager v{}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "CIM - Claude Instance Manager v{}",
+                env!("CARGO_PKG_VERSION")
+            );
             println!();
             println!("用法:");
             println!("  cim daemon              启动守护进程");
@@ -56,7 +60,11 @@ async fn run_daemon() -> Result<()> {
 
     // Load configuration
     let config = config::Config::load()?;
-    info!("Configuration loaded from {:?}", config::Config::config_path());
+    std::env::set_var("CIM_ISOLATION_GROUP", &config.firewall.isolation_group);
+    info!(
+        "Configuration loaded from {:?}",
+        config::Config::config_path()
+    );
 
     // Initialize database
     let db_path = PathBuf::from(config::Config::expand_path(&config.daemon.database_path));
@@ -73,7 +81,13 @@ async fn run_daemon() -> Result<()> {
         exit_ip_endpoints: config.proxy.exit_ip_endpoints.clone(),
     };
 
-    let mut proxy_manager = proxy::ProxyManager::new(proxy_config.clone());
+    let geo_profile = geoip::shared_profile();
+    let firewall = std::sync::Arc::new(firewall::FirewallController::new(config.firewall.clone()));
+    let proxy_manager = std::sync::Arc::new(proxy::ProxyManager::with_geo_profile_and_firewall(
+        proxy_config,
+        geo_profile.clone(),
+        firewall,
+    ));
 
     // Start sing-box
     if let Err(e) = proxy_manager.start().await {
@@ -82,25 +96,63 @@ async fn run_daemon() -> Result<()> {
     } else {
         info!("Proxy manager started successfully");
 
-        // Spawn health check loop in background
-        tokio::spawn(async move {
-            let mut pm = proxy::ProxyManager::new(proxy_config);
-            if let Err(e) = pm.health_check_loop().await {
-                error!("Health check loop error: {}", e);
+        // Resolve the first exit profile before the API starts serving launch
+        // requests, so new instances inherit the correct locale immediately.
+        match proxy_manager.refresh_geo_profile().await {
+            Ok(_) => proxy_manager.mark_healthy(),
+            Err(error) => {
+                proxy_manager.mark_unhealthy();
+                warn!("Initial GeoIP resolution failed: {}", error);
             }
-        });
+        }
     }
 
+    // Keep the health loop alive even when the first start failed. A later
+    // API restart can then recover the proxy and immediately resume checks.
+    let health_proxy_manager = proxy_manager.clone();
+    tokio::spawn(async move {
+        health_proxy_manager.health_check_loop().await;
+    });
+
     // Create API router with storage
-    let router = api::create_router(storage).await;
+    let router = api::create_router(
+        storage,
+        geo_profile,
+        proxy_manager.clone(),
+        config.verification.allow_lan,
+    )
+    .await;
 
     // Start HTTP server
     let listener = tokio::net::TcpListener::bind(&config.daemon.listen_addr).await?;
     info!("Listening on http://{}", config.daemon.listen_addr);
 
-    axum::serve(listener, router).await?;
+    let server = axum::serve(listener, router);
+    tokio::select! {
+        result = server => result?,
+        _ = shutdown_signal() => {
+            info!("Shutdown signal received, stopping proxy and instances");
+            proxy_manager.stop().await?;
+        }
+    }
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 async fn init_database() -> Result<()> {
@@ -119,10 +171,19 @@ async fn init_database() -> Result<()> {
 }
 
 async fn install_firewall() -> Result<()> {
-    println!("Installing PF firewall rules...");
-    println!("This requires sudo privileges.");
-    println!();
-    println!("Not yet implemented - see docs/firewall-setup.md");
+    let config = config::Config::load()?;
+    let controller = firewall::FirewallController::new(config.firewall.clone());
+    controller.install()?;
+    println!("PF fail-closed rules installed.");
+    println!(
+        "Add the CIM anchor to /etc/pf.conf, then start cim daemon to enable recovery/block transitions:"
+    );
+    println!("  anchor \"{}\"", config.firewall.anchor_name);
+    println!(
+        "  load anchor \"{}\" from \"{}\"",
+        config.firewall.anchor_name,
+        controller.block_rules_path().display()
+    );
 
     Ok(())
 }

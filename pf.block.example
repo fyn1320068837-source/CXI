@@ -5,9 +5,9 @@
 # 阻断除本地回环外的 TCP/UDP 出站连接
 block return out quick proto tcp from any to !127.0.0.0/8 group cimgrp
 block return out quick proto udp from any to !127.0.0.0/8 group cimgrp
+block return out quick proto tcp from any to !::1 group cimgrp
+block return out quick proto udp from any to !::1 group cimgrp
 
-# 允许本地回环
+# 仅允许实例访问本地 HTTP/SOCKS 代理监听端口
 pass out quick proto {tcp udp} from any to 127.0.0.0/8
-
-# 允许已建立的连接继续
-pass out quick proto tcp flags S/SA keep state
+pass out quick proto {tcp udp} from any to ::1

@@ -1,6 +1,6 @@
 // Claude Desktop adapter (Instance B) - Soft isolation mode
-use super::{InstanceAdapter, InstanceKind, ProcessHandle, CapabilityReport, ValidationReport, ValidationStatus};
-use anyhow::{Result, Context};
+use super::{CapabilityReport, InstanceAdapter, ProcessHandle};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Command;
 
@@ -17,14 +17,6 @@ impl DesktopAdapter {
         }
     }
 
-    fn check_vm_support(&self) -> bool {
-        Command::new("which")
-            .arg("tart")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
     async fn get_claude_pid(&self) -> Option<u32> {
         // Wait a bit more for the app to fully launch
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -37,11 +29,7 @@ impl DesktopAdapter {
         ];
 
         for pattern in patterns {
-            if let Ok(output) = Command::new("pgrep")
-                .arg("-f")
-                .arg(pattern)
-                .output()
-            {
+            if let Ok(output) = Command::new("pgrep").arg("-f").arg(pattern).output() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(pid_str) = stdout.lines().next() {
                     if let Ok(pid) = pid_str.trim().parse() {
@@ -57,10 +45,6 @@ impl DesktopAdapter {
 
 #[async_trait]
 impl InstanceAdapter for DesktopAdapter {
-    fn kind(&self) -> InstanceKind {
-        InstanceKind::Desktop
-    }
-
     async fn detect(&self) -> CapabilityReport {
         let installed = std::path::Path::new(&self.app_path).exists();
         let version = if installed {
@@ -72,7 +56,11 @@ impl InstanceAdapter for DesktopAdapter {
         CapabilityReport {
             installed,
             version,
-            path: if installed { Some(self.app_path.clone()) } else { None },
+            path: if installed {
+                Some(self.app_path.clone())
+            } else {
+                None
+            },
         }
     }
 
@@ -100,13 +88,12 @@ impl InstanceAdapter for DesktopAdapter {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // Get actual Claude process PID
-        let pid = self.get_claude_pid().await
+        let pid = self
+            .get_claude_pid()
+            .await
             .ok_or_else(|| anyhow::anyhow!("Failed to find Claude Desktop process"))?;
 
-        Ok(ProcessHandle {
-            root_pid: pid,
-            kind: InstanceKind::Desktop,
-        })
+        Ok(ProcessHandle { root_pid: pid })
     }
 
     async fn stop(&self, _handle: &ProcessHandle) -> Result<()> {
@@ -128,11 +115,7 @@ impl InstanceAdapter for DesktopAdapter {
         let mut pids = vec![handle.root_pid];
 
         // Use pgrep to find all Claude.app processes
-        if let Ok(output) = Command::new("pgrep")
-            .arg("-f")
-            .arg("Claude.app")
-            .output()
-        {
+        if let Ok(output) = Command::new("pgrep").arg("-f").arg("Claude.app").output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if let Ok(pid) = line.trim().parse::<u32>() {
@@ -144,19 +127,5 @@ impl InstanceAdapter for DesktopAdapter {
         }
 
         pids
-    }
-
-    async fn verify_network(&self, _handle: &ProcessHandle) -> ValidationReport {
-        if self.use_vm {
-            ValidationReport {
-                status: ValidationStatus::Unknown,
-                details: "VM network verification not yet implemented".to_string(),
-            }
-        } else {
-            ValidationReport {
-                status: ValidationStatus::Unsupported,
-                details: "Soft isolation mode - network verification not supported".to_string(),
-            }
-        }
     }
 }
