@@ -360,6 +360,7 @@
             <div class="proxy-actions">
                 <button class="btn btn-primary" onclick="testProxy()">测试连接</button>
                 <button class="btn btn-secondary" onclick="openProxyModal()">配置代理</button>
+                <button class="btn btn-secondary" id="btn-restart" onclick="restartProxy()">重启服务</button>
             </div>
         </div>
     </section>
@@ -760,7 +761,6 @@ async function launch(kind) {
         await poll();
     }
 }
-
 async function stop(kind) {
     const btn = document.getElementById(kind + '-stop-btn');
     btn.disabled = true;
@@ -775,6 +775,51 @@ async function stop(kind) {
         btn.textContent = '停止';
         await poll();
     }
+}
+
+async function restartProxy() {
+    const btn = document.getElementById('btn-restart');
+    btn.disabled = true;
+    btn.textContent = '重启中…';
+    try {
+        const r = await fetch('/api/proxy/restart', { method: 'POST' });
+        const d = await r.json();
+        if (d.success) {
+            showBanner('✓ ' + d.message);
+            // 等 3 秒让 sing-box 完全启动后测一次
+            setTimeout(async () => {
+                await testProxySilent();
+                btn.disabled = false;
+                btn.textContent = '重启服务';
+            }, 3000);
+        } else {
+            showBanner('重启失败：' + d.message);
+            btn.disabled = false;
+            btn.textContent = '重启服务';
+        }
+    } catch (e) {
+        showBanner('请求失败：' + e.message);
+        btn.disabled = false;
+        btn.textContent = '重启服务';
+    }
+}
+
+// 静默测试代理（不操作按钮）
+async function testProxySilent() {
+    try {
+        const r = await fetch('/api/proxy/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+        });
+        const d = await r.json();
+        if (d.healthy) {
+            renderProxy({ healthy: true, exit_ip: d.exit_ip, latency_ms: d.latency_ms, geo: d.geo });
+            hideBanner();
+        } else {
+            renderProxy({ healthy: false, exit_ip: null, latency_ms: null, geo: null });
+        }
+    } catch {}
 }
 
 async function testProxy() {

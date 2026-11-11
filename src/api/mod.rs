@@ -49,6 +49,7 @@ pub async fn create_router(storage: Arc<Storage>) -> Router {
         .route("/api/proxy", get(get_proxy_config))
         .route("/api/proxy", post(save_proxy_config))
         .route("/api/proxy/test", post(test_proxy))
+        .route("/api/proxy/restart", post(restart_proxy))
         .route("/api/instances/:kind/launch", post(launch_instance))
         .route("/api/instances/:kind/stop", post(stop_instance))
         .route("/api/logs", get(get_logs))
@@ -161,6 +162,33 @@ async fn get_status(
             status: "软隔离模式".to_string(),
         },
     })
+}
+
+async fn restart_proxy(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    // 重启 sing-box：pkill + 守护进程会重新启动
+    let status = std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("sing-box")
+        .status();
+
+    match status {
+        Ok(_) => {
+            // 等待 sing-box 被 proxy manager 重新拉起（2秒）
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            let _ = state.tx.send(r#"{"type":"proxy_restarting"}"#.to_string());
+
+            Json(serde_json::json!({
+                "success": true,
+                "message": "sing-box 已重启，新配置生效"
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": format!("重启失败: {}", e)
+        })),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -45,10 +45,14 @@ impl ProxyManager {
 
         info!("Starting sing-box from {:?}", self.config.binary_path);
 
-        // Generate config if needed
+        // Kill any stale sing-box process first
+        let _ = Command::new("pkill").arg("-f").arg("sing-box").status();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Generate config
         self.generate_config().await?;
 
-        // Start sing-box
+        // Start sing-box, capture stderr for diagnostics
         let child = Command::new(&self.config.binary_path)
             .arg("run")
             .arg("-c")
@@ -61,8 +65,24 @@ impl ProxyManager {
         info!("sing-box started with PID: {}", child.id());
         self.sing_box_process = Some(child);
 
-        // Wait for sing-box to initialize
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait longer for sing-box to initialize with upstream proxy
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Verify it's still alive
+        if let Some(ref mut child) = self.sing_box_process {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.sing_box_process = None;
+                    anyhow::bail!("sing-box exited immediately with status: {}", status);
+                }
+                Ok(None) => {
+                    info!("sing-box is running and stable");
+                }
+                Err(e) => {
+                    warn!("Could not check sing-box status: {}", e);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -217,14 +237,6 @@ impl ProxyManager {
 
         let config = serde_json::json!({
             "log": { "level": "warn" },
-            "dns": {
-                "servers": [{
-                    "tag": "remote",
-                    "address": "https://1.1.1.1/dns-query",
-                    "detour": "upstream"
-                }],
-                "strategy": "ipv4_only"
-            },
             "inbounds": [
                 { "type": "http",  "tag": "http-in",  "listen": "127.0.0.1", "listen_port": 7890 },
                 { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 7891 }
