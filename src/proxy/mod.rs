@@ -107,45 +107,58 @@ impl ProxyManager {
         Ok(())
     }
 
-    /// Check if sing-box is running
+    /// Check if sing-box is running (uses pgrep, not child handle)
     pub fn is_running(&mut self) -> bool {
-        if let Some(child) = &mut self.sing_box_process {
-            match child.try_wait() {
-                Ok(None) => true,  // Still running
-                Ok(Some(status)) => {
-                    warn!("sing-box exited with status: {}", status);
-                    self.sing_box_process = None;
-                    false
-                }
-                Err(e) => {
-                    error!("Error checking sing-box status: {}", e);
-                    false
-                }
-            }
-        } else {
-            false
+        let output = Command::new("pgrep")
+            .arg("-f")
+            .arg("sing-box")
+            .output();
+        match output {
+            Ok(o) => o.status.success(),
+            Err(_) => false,
         }
     }
 
-    /// Check exit IP through proxy
+    /// Check exit IP through proxy using curl (more reliable for SOCKS5)
     pub async fn check_exit_ip(&self) -> Result<String> {
-        let client = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::http("http://127.0.0.1:7890")?)
-            .timeout(Duration::from_secs(self.config.health_check_timeout))
-            .build()?;
+        let output = tokio::process::Command::new("curl")
+            .args(&[
+                "-s",
+                "-x", "socks5://127.0.0.1:7891",
+                "--max-time", &self.config.health_check_timeout.to_string(),
+                "https://ipv4.icanhazip.com",
+            ])
+            .output()
+            .await
+            .context("Failed to run curl")?;
 
-        // Try each endpoint until one succeeds
+        if output.status.success() {
+            let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !ip.is_empty() {
+                info!("Exit IP: {}", ip);
+                return Ok(ip);
+            }
+        }
+
+        // Fallback endpoints
         for endpoint in &self.config.exit_ip_endpoints {
-            match client.get(endpoint).send().await {
-                Ok(resp) => {
-                    if let Ok(ip) = resp.text().await {
-                        let ip = ip.trim().to_string();
+            let result = tokio::process::Command::new("curl")
+                .args(&[
+                    "-s",
+                    "-x", "socks5://127.0.0.1:7891",
+                    "--max-time", &self.config.health_check_timeout.to_string(),
+                    endpoint.as_str(),
+                ])
+                .output()
+                .await;
+
+            if let Ok(out) = result {
+                if out.status.success() {
+                    let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !ip.is_empty() && ip.contains('.') {
                         info!("Exit IP: {}", ip);
                         return Ok(ip);
                     }
-                }
-                Err(e) => {
-                    warn!("Failed to check exit IP at {}: {}", endpoint, e);
                 }
             }
         }
