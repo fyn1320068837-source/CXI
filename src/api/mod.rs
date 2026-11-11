@@ -18,18 +18,29 @@ use crate::storage::Storage;
 pub struct AppState {
     pub tx: broadcast::Sender<String>,
     pub instance_manager: Arc<RwLock<InstanceManager>>,
+    pub log_buffer: Arc<RwLock<Vec<LogEntry>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub instance: String,
+    pub method: String,
+    pub url: String,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub size_bytes: u64,
 }
 
 pub async fn create_router(storage: Arc<Storage>) -> Router {
-    // Create broadcast channel for WebSocket updates
     let (tx, _rx) = broadcast::channel(100);
+    let log_buffer: Arc<RwLock<Vec<LogEntry>>> = Arc::new(RwLock::new(Vec::new()));
 
-    // Create instance manager with storage
     let instance_manager = Arc::new(RwLock::new(
         InstanceManager::new().with_storage(storage)
     ));
 
-    let state = AppState { tx, instance_manager };
+    let state = AppState { tx, instance_manager, log_buffer };
 
     Router::new()
         .route("/", get(serve_index))
@@ -38,6 +49,7 @@ pub async fn create_router(storage: Arc<Storage>) -> Router {
         .route("/api/proxy/test", post(test_proxy))
         .route("/api/instances/:kind/launch", post(launch_instance))
         .route("/api/instances/:kind/stop", post(stop_instance))
+        .route("/api/logs", get(get_logs))
         .route("/ws", get(websocket_handler))
         .nest_service("/static", ServeDir::new("web"))
         .with_state(Arc::new(state))
@@ -212,6 +224,13 @@ async fn test_proxy(
             }))
         }
     }
+}
+
+async fn get_logs(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let logs = state.log_buffer.read().await;
+    Json(serde_json::json!({ "logs": *logs }))
 }
 
 async fn launch_instance(
