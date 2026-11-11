@@ -1,0 +1,28 @@
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Rust
+target/
+**/*.rs.bk
+
+# Logs
+*.log
+
+# CIM runtime (不提交运行时文件)
+.cim/
+sing-box
+
+# macOS
+.AppleDouble
+.LSOverride
+._*
+
+# Testing temp
+/tmp/
+*.test
+
+# Studio 临时文件
+studio/

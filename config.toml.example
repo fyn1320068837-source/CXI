@@ -1,0 +1,56 @@
+# CIM 配置文件
+# 该文件由守护进程管理，手动修改后需重启服务
+
+[daemon]
+# HTTP API 监听地址（仅本地）
+listen_addr = "127.0.0.1:8080"
+
+# 数据库路径
+database_path = "~/.cim/cim.db"
+
+# 日志级别: trace, debug, info, warn, error
+log_level = "info"
+
+[proxy]
+# sing-box 二进制路径
+sing_box_binary = "~/.cim/sing-box/sing-box"
+
+# sing-box 配置路径
+sing_box_config = "~/.cim/sing-box/config.json"
+
+# 健康检查间隔（秒）
+health_check_interval = 15
+
+# 健康检查超时（秒）
+health_check_timeout = 5
+
+# 出口 IP 探测端点（按顺序尝试）
+exit_ip_endpoints = [
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+    "https://icanhazip.com"
+]
+
+[verification]
+# 网络验证间隔（秒）
+interval = 30
+
+# 是否允许 LAN 连接
+allow_lan = true
+
+[geoip]
+# GeoIP 数据源: ip-api | maxmind
+provider = "ip-api"
+
+# MaxMind 数据库路径（provider = maxmind 时需要）
+# maxmind_db_path = "~/.cim/GeoLite2-City.mmdb"
+
+[firewall]
+# PF anchor 名称
+anchor_name = "com.cim"
+
+# PF 规则文件路径
+rules_path = "/etc/pf.anchors/com.cim"
+
+# 用于隔离的辅助组名
+isolation_group = "cimgrp"

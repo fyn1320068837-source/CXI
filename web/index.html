@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIM - Claude Instance Manager</title>
+    <style>
+        :root {
+            --accent: #C8102E;
+            --accent-dark: #9e0d24;
+            --bg: #f7f6f4;
+            --surface: #ffffff;
+            --text: #1a1a1a;
+            --muted: #666;
+            --border: #e5e5e5;
+            --pass: #2e7d32;
+            --pass-bg: #e8f5e9;
+            --fail: #c62828;
+            --fail-bg: #ffebee;
+            --warn: #e65100;
+            --warn-bg: #fff3e0;
+            --grey: #616161;
+            --grey-bg: #f5f5f5;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --bg: #161616;
+                --surface: #242424;
+                --text: #f0f0f0;
+                --muted: #999;
+                --border: #333;
+                --grey-bg: #1e1e1e;
+            }
+        }
+        :root[data-theme="dark"] {
+            --bg: #161616;
+            --surface: #242424;
+            --text: #f0f0f0;
+            --muted: #999;
+            --border: #333;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Songti SC', 'SimSun', 'Georgia', serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        /* ── header ── */
+        header {
+            background: var(--surface);
+            border-bottom: 3px solid var(--accent);
+            padding: 1.25rem 2rem;
+            display: flex;
+            align-items: baseline;
+            gap: 1rem;
+        }
+        header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: .04em; }
+        header .sub { color: var(--muted); font-size: .85rem; }
+        header .spacer { flex: 1; }
+        .theme-btn {
+            background: none; border: 1px solid var(--border);
+            color: var(--muted); border-radius: 4px; padding: .25rem .6rem;
+            cursor: pointer; font-size: .8rem;
+        }
+        .theme-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* ── banner ── */
+        .banner {
+            display: none; padding: .85rem 2rem;
+            font-size: .9rem; font-weight: 500;
+            border-left: 4px solid;
+            background: var(--fail-bg); color: var(--fail); border-color: var(--fail);
+        }
+        .banner.show { display: block; }
+
+        /* ── layout ── */
+        main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        section { margin-bottom: 2.5rem; }
+        h2 {
+            font-size: 1rem; font-weight: 600; letter-spacing: .08em;
+            text-transform: uppercase; color: var(--muted);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: .5rem; margin-bottom: 1.25rem;
+        }
+
+        /* ── cards ── */
+        .card {
+            background: var(--surface); border-radius: 8px;
+            border: 1px solid var(--border); padding: 1.25rem;
+        }
+        .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+
+        /* ── proxy card ── */
+        .proxy-row { display: flex; justify-content: space-between; align-items: center;
+            padding: .45rem 0; border-bottom: 1px solid var(--border); font-size: .92rem; }
+        .proxy-row:last-child { border-bottom: none; }
+        .proxy-row .lbl { color: var(--muted); }
+        .proxy-row .val { font-family: 'SF Mono', 'Menlo', monospace; font-size: .85rem; }
+        .proxy-actions { margin-top: 1rem; display: flex; gap: .5rem; }
+
+        /* ── instance cards ── */
+        .inst-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .75rem; }
+        .inst-title { font-size: 1rem; font-weight: 600; }
+        .inst-label { font-size: .75rem; color: var(--muted); background: var(--grey-bg);
+            padding: .15rem .5rem; border-radius: 3px; }
+        .inst-row { display: flex; justify-content: space-between; font-size: .88rem;
+            padding: .3rem 0; border-bottom: 1px solid var(--border); }
+        .inst-row:last-of-type { border-bottom: none; }
+        .inst-actions { margin-top: .9rem; display: flex; gap: .5rem; }
+
+        /* ── buttons ── */
+        .btn {
+            border: none; border-radius: 4px; padding: .4rem 1.1rem;
+            font-size: .88rem; font-family: inherit; cursor: pointer;
+            transition: background .15s;
+        }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary { background: var(--grey-bg); color: var(--text); border: 1px solid var(--border); }
+        .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* ── badges ── */
+        .badge {
+            display: inline-block; padding: .15rem .6rem; border-radius: 3px;
+            font-size: .78rem; font-weight: 500; letter-spacing: .02em;
+        }
+        .badge-pass    { background: var(--pass-bg);   color: var(--pass); }
+        .badge-fail    { background: var(--fail-bg);   color: var(--fail); }
+        .badge-warn    { background: var(--warn-bg);   color: var(--warn); }
+        .badge-grey    { background: var(--grey-bg);   color: var(--grey); }
+        .badge-running { background: var(--pass-bg);   color: var(--pass); }
+        .badge-stopped { background: var(--grey-bg);   color: var(--grey); }
+        .badge-frozen  { background: var(--warn-bg);   color: var(--warn); }
+
+        /* ── ws dot ── */
+        .ws-dot {
+            display: inline-block; width: 7px; height: 7px;
+            border-radius: 50%; background: #ccc; margin-right: .4rem;
+            vertical-align: middle;
+        }
+        .ws-dot.connected { background: var(--pass); }
+        .ws-status { font-size: .78rem; color: var(--muted); display: flex; align-items: center; }
+
+        /* ── firewall section ── */
+        .firewall-row { display: flex; justify-content: space-between; align-items: center;
+            font-size: .9rem; }
+        .firewall-note { margin-top: .6rem; font-size: .8rem; color: var(--muted); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>CIM</h1>
+    <span class="sub">Claude Instance Manager &nbsp;v1.0.0</span>
+    <div class="spacer"></div>
+    <span class="ws-status"><span class="ws-dot" id="ws-dot"></span><span id="ws-label">未连接</span></span>
+    &nbsp;&nbsp;
+    <button class="theme-btn" onclick="toggleTheme()">🌓</button>
+</header>
+
+<div class="banner" id="banner"></div>
+
+<main>
+    <!-- ── 代理状态 ── -->
+    <section>
+        <h2>代理状态</h2>
+        <div class="card">
+            <div class="proxy-row">
+                <span class="lbl">状态</span>
+                <span id="proxy-status"><span class="badge badge-grey">检测中…</span></span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">出口 IP</span>
+                <span class="val" id="proxy-ip">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">地理位置</span>
+                <span class="val" id="proxy-geo">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">延迟</span>
+                <span class="val" id="proxy-latency">—</span>
+            </div>
+            <div class="proxy-actions">
+                <button class="btn btn-primary" onclick="testProxy()">测试连接</button>
+                <button class="btn btn-secondary" onclick="showProxyConfig()">配置代理</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── 实例管理 ── -->
+    <section>
+        <h2>实例管理</h2>
+        <div class="grid2">
+
+            <div class="card" id="inst-code">
+                <div class="inst-header">
+                    <span class="inst-title">A · Claude Code</span>
+                    <span class="inst-label">CLI</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="code-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="code-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="code-launch-btn" onclick="launch('code')">启动</button>
+                    <button class="btn btn-secondary"  id="code-stop-btn"   onclick="stop('code')">停止</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-desktop">
+                <div class="inst-header">
+                    <span class="inst-title">B · Claude Desktop</span>
+                    <span class="inst-label">App</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="desktop-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="desktop-validation"><span class="badge badge-grey">UNSUPPORTED</span></span>
+                </div>
+                <div class="inst-row" style="color: var(--muted); font-size:.8rem;">
+                    <span colspan="2">软隔离模式，网络验证不可用</span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="desktop-launch-btn" onclick="launch('desktop')">启动</button>
+                    <button class="btn btn-secondary"  id="desktop-stop-btn"   onclick="stop('desktop')">停止</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-vscode">
+                <div class="inst-header">
+                    <span class="inst-title">C · VS Code 扩展</span>
+                    <span class="inst-label">Extension</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="vscode-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="vscode-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="vscode-launch-btn" onclick="launch('vscode')">启动</button>
+                    <button class="btn btn-secondary"  id="vscode-stop-btn"   onclick="stop('vscode')">停止</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-web">
+                <div class="inst-header">
+                    <span class="inst-title">D · Claude Web</span>
+                    <span class="inst-label">Chromium</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="web-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="web-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="web-launch-btn" onclick="launch('web')">启动</button>
+                    <button class="btn btn-secondary"  id="web-stop-btn"   onclick="stop('web')">停止</button>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- ── 防火墙 ── -->
+    <section>
+        <h2>防火墙</h2>
+        <div class="card">
+            <div class="firewall-row">
+                <span>PF 规则状态</span>
+                <span id="firewall-status"><span class="badge badge-warn">软隔离模式</span></span>
+            </div>
+            <p class="firewall-note">
+                安装 PF 规则可提供内核级断线保护：<code>sudo cim install-firewall</code>
+            </p>
+        </div>
+    </section>
+</main>
+
+<script>
+// ── 状态管理 ───────────────────────────────────────────────
+let ws = null;
+let reconnectTimer = null;
+
+// ── WebSocket ──────────────────────────────────────────────
+function connectWS() {
+    ws = new WebSocket('ws://127.0.0.1:8080/ws');
+
+    ws.onopen = () => {
+        setWSDot(true);
+        clearTimeout(reconnectTimer);
+        poll(); // 立即拉一次完整状态
+    };
+
+    ws.onmessage = ({ data }) => {
+        try {
+            const msg = JSON.parse(data);
+            if (msg.type === 'status_update') applyStatus(msg.data);
+        } catch {}
+    };
+
+    ws.onclose = () => {
+        setWSDot(false);
+        reconnectTimer = setTimeout(connectWS, 5000);
+    };
+
+    ws.onerror = () => ws.close();
+}
+
+function setWSDot(ok) {
+    document.getElementById('ws-dot').className  = 'ws-dot' + (ok ? ' connected' : '');
+    document.getElementById('ws-label').textContent = ok ? '已连接' : '未连接';
+}
+
+// ── 轮询 ──────────────────────────────────────────────────
+async function poll() {
+    try {
+        const r = await fetch('/api/status');
+        if (!r.ok) return;
+        const d = await r.json();
+        applyStatus(d);
+    } catch {}
+}
+
+setInterval(poll, 30000);
+
+// ── 状态渲染 ───────────────────────────────────────────────
+function applyStatus(d) {
+    if (d.proxy) renderProxy(d.proxy);
+    if (d.instances) d.instances.forEach(renderInstance);
+    if (d.firewall) renderFirewall(d.firewall);
+}
+
+function renderProxy(p) {
+    const statusEl = document.getElementById('proxy-status');
+    if (p.healthy) {
+        statusEl.innerHTML = badge('pass', '正常');
+        hideBanner();
+    } else {
+        statusEl.innerHTML = badge('fail', '故障');
+        showBanner('⚠ 代理连接故障，实例已被保护（软隔离模式）');
+    }
+    document.getElementById('proxy-ip').textContent =
+        p.exit_ip || '—';
+    document.getElementById('proxy-geo').textContent =
+        p.geo ? (p.geo.country + (p.geo.city ? ' · ' + p.geo.city : '')) : '—';
+    document.getElementById('proxy-latency').textContent =
+        p.latency_ms != null ? p.latency_ms + ' ms' : '—';
+}
+
+function renderInstance(inst) {
+    const id = inst.kind;
+
+    // status
+    const statusEl = document.getElementById(id + '-status');
+    if (statusEl) {
+        const cls = { running: 'running', stopped: 'stopped', frozen: 'frozen' }[inst.status] || 'grey';
+        const lbl = { running: '运行中', stopped: '已停止', frozen: '已冻结' }[inst.status] || inst.status;
+        statusEl.innerHTML = badge(cls, lbl);
+    }
+
+    // validation
+    const valEl = document.getElementById(id + '-validation');
+    if (valEl) {
+        const cls = {
+            pass: 'pass', fail: 'fail', unknown: 'grey', unsupported: 'grey'
+        }[inst.validation] || 'grey';
+        valEl.innerHTML = badge(cls, inst.validation.toUpperCase());
+    }
+
+    // button states
+    const isRunning = inst.status === 'running';
+    const launchBtn = document.getElementById(id + '-launch-btn');
+    const stopBtn   = document.getElementById(id + '-stop-btn');
+    if (launchBtn) launchBtn.disabled = isRunning;
+    if (stopBtn)   stopBtn.disabled   = !isRunning;
+}
+
+function renderFirewall(fw) {
+    const el = document.getElementById('firewall-status');
+    if (!el) return;
+    el.innerHTML = fw.installed
+        ? badge('pass', 'PF 规则已安装')
+        : badge('warn', '软隔离模式');
+}
+
+// ── 实例操作 ───────────────────────────────────────────────
+async function launch(kind) {
+    const btn = document.getElementById(kind + '-launch-btn');
+    btn.disabled = true;
+    btn.textContent = '启动中…';
+    try {
+        const r = await fetch(`/api/instances/${kind}/launch`, { method: 'POST' });
+        const d = await r.json();
+        if (!d.success) showBanner('启动失败：' + d.message);
+    } catch (e) {
+        showBanner('请求失败：' + e.message);
+    } finally {
+        btn.textContent = '启动';
+        await poll();
+    }
+}
+
+async function stop(kind) {
+    const btn = document.getElementById(kind + '-stop-btn');
+    btn.disabled = true;
+    btn.textContent = '停止中…';
+    try {
+        const r = await fetch(`/api/instances/${kind}/stop`, { method: 'POST' });
+        const d = await r.json();
+        if (!d.success) showBanner('停止失败：' + d.message);
+    } catch (e) {
+        showBanner('请求失败：' + e.message);
+    } finally {
+        btn.textContent = '停止';
+        await poll();
+    }
+}
+
+async function testProxy() {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '检测中…';
+    try {
+        const r = await fetch('/api/proxy/test', { method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({}) });
+        const d = await r.json();
+        renderProxy(d);
+    } catch (e) {
+        showBanner('代理测试失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '测试连接';
+    }
+}
+
+function showProxyConfig() {
+    alert('代理配置功能将在下一版本中通过界面完成。\n目前请直接编辑 ~/.cim/config.toml');
+}
+
+// ── Banner ─────────────────────────────────────────────────
+function showBanner(msg) {
+    const el = document.getElementById('banner');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(hideBanner, 8000);
+}
+function hideBanner() {
+    document.getElementById('banner').classList.remove('show');
+}
+
+// ── 主题切换 ───────────────────────────────────────────────
+function toggleTheme() {
+    const root = document.documentElement;
+    const cur  = root.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('cim-theme', next); } catch {}
+}
+try {
+    const saved = localStorage.getItem('cim-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+} catch {}
+
+// ── 工具 ──────────────────────────────────────────────────
+function badge(cls, text) {
+    return `<span class="badge badge-${cls}">${text}</span>`;
+}
+
+// ── 启动 ──────────────────────────────────────────────────
+connectWS();
+</script>
+</body>
+</html>

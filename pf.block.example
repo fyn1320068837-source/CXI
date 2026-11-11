@@ -1,0 +1,13 @@
+# PF 规则 - 故障态（阻断直连）
+# /etc/pf.anchors/com.cim.block
+# 阻断 cimgrp 组的新建公网连接
+
+# 阻断除本地回环外的 TCP/UDP 出站连接
+block return out quick proto tcp from any to !127.0.0.0/8 group cimgrp
+block return out quick proto udp from any to !127.0.0.0/8 group cimgrp
+
+# 允许本地回环
+pass out quick proto {tcp udp} from any to 127.0.0.0/8
+
+# 允许已建立的连接继续
+pass out quick proto tcp flags S/SA keep state

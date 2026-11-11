@@ -1,0 +1,4 @@
+# PF 规则 - 正常态（放行）
+# /etc/pf.anchors/com.cim.allow
+# 正常运行时不额外阻断
+pass
