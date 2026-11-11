@@ -170,16 +170,53 @@ impl ProxyManager {
         Ok(())
     }
 
-    /// Generate sing-box config
+    /// Generate sing-box config with real upstream proxy
     async fn generate_config(&self) -> Result<()> {
         use std::fs;
 
-        // For now, generate a test config with direct outbound
-        // In production, this should read proxy credentials from Keychain
+        // 读取 config.toml 中的代理设置
+        let home = std::env::var("HOME").unwrap_or_default();
+        let toml_path = format!("{}/.cim/config.toml", home);
+        let toml_content = fs::read_to_string(&toml_path).unwrap_or_default();
+
+        let upstream_host     = extract_toml_val(&toml_content, "host").unwrap_or_default();
+        let upstream_port: u16 = extract_toml_val(&toml_content, "port")
+            .and_then(|v| v.parse().ok()).unwrap_or(0);
+        let upstream_user     = extract_toml_val(&toml_content, "username").unwrap_or_default();
+
+        // 从 Keychain 读取密码
+        let upstream_pass = get_keychain_password("com.cim.proxy", &upstream_host)
+            .unwrap_or_default();
+
+        // 决定出站类型
+        let outbound = if !upstream_host.is_empty() && upstream_port > 0 {
+            info!("Configuring sing-box upstream: socks5://{}:{}", upstream_host, upstream_port);
+            if !upstream_user.is_empty() {
+                serde_json::json!({
+                    "type": "socks",
+                    "tag": "upstream",
+                    "server": upstream_host,
+                    "server_port": upstream_port,
+                    "username": upstream_user,
+                    "password": upstream_pass,
+                    "version": "5"
+                })
+            } else {
+                serde_json::json!({
+                    "type": "socks",
+                    "tag": "upstream",
+                    "server": upstream_host,
+                    "server_port": upstream_port,
+                    "version": "5"
+                })
+            }
+        } else {
+            warn!("No upstream proxy configured, using direct outbound");
+            serde_json::json!({ "type": "direct", "tag": "upstream" })
+        };
+
         let config = serde_json::json!({
-            "log": {
-                "level": "warn"
-            },
+            "log": { "level": "warn" },
             "dns": {
                 "servers": [{
                     "tag": "remote",
@@ -189,29 +226,13 @@ impl ProxyManager {
                 "strategy": "ipv4_only"
             },
             "inbounds": [
-                {
-                    "type": "http",
-                    "tag": "http-in",
-                    "listen": "127.0.0.1",
-                    "listen_port": 7890
-                },
-                {
-                    "type": "socks",
-                    "tag": "socks-in",
-                    "listen": "127.0.0.1",
-                    "listen_port": 7891
-                }
+                { "type": "http",  "tag": "http-in",  "listen": "127.0.0.1", "listen_port": 7890 },
+                { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 7891 }
             ],
-            "outbounds": [{
-                "type": "direct",
-                "tag": "upstream"
-            }],
-            "route": {
-                "final": "upstream"
-            }
+            "outbounds": [outbound],
+            "route": { "final": "upstream" }
         });
 
-        // Ensure parent directory exists
         if let Some(parent) = self.config.config_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -222,6 +243,44 @@ impl ProxyManager {
 
         Ok(())
     }
+}
+
+fn extract_toml_val(content: &str, key: &str) -> Option<String> {
+    let mut in_proxy = false;
+    for line in content.lines() {
+        let t = line.trim();
+        // 进入/离开 section
+        if t.starts_with('[') {
+            in_proxy = t == "[proxy]";
+            continue;
+        }
+        if !in_proxy { continue; }
+        // 只在 [proxy] section 里匹配
+        let prefix_space = format!("{} =", key);
+        let prefix_eq    = format!("{}=", key);
+        if t.starts_with(&prefix_space) || t.starts_with(&prefix_eq) {
+            if let Some(val) = t.splitn(2, '=').nth(1) {
+                let val = val.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !val.is_empty() { return Some(val); }
+            }
+        }
+    }
+    None
+}
+
+fn get_keychain_password(service: &str, account: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("security")
+            .args(&["find-generic-password", "-s", service, "-a", account, "-w"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let pwd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !pwd.is_empty() { return Some(pwd); }
+        }
+    }
+    None
 }
 
 impl Drop for ProxyManager {

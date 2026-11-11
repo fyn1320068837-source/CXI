@@ -46,6 +46,8 @@ pub async fn create_router(storage: Arc<Storage>) -> Router {
         .route("/", get(serve_index))
         .route("/health", get(health_check))
         .route("/api/status", get(get_status))
+        .route("/api/proxy", get(get_proxy_config))
+        .route("/api/proxy", post(save_proxy_config))
         .route("/api/proxy/test", post(test_proxy))
         .route("/api/instances/:kind/launch", post(launch_instance))
         .route("/api/instances/:kind/stop", post(stop_instance))
@@ -159,6 +161,154 @@ async fn get_status(
             status: "软隔离模式".to_string(),
         },
     })
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProxyConfigData {
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    // 密码不返回给前端，只接收保存
+    #[serde(skip_serializing)]
+    pub password: Option<String>,
+}
+
+async fn get_proxy_config(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    // 从配置文件读取（不含密码）
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config_path = format!("{}/.cim/config.toml", home);
+
+    // 尝试解析 config.toml 中的代理设置
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        // 简单提取 host/port/username（生产中用 toml 库解析）
+        let host = extract_toml_str(&content, "host").unwrap_or_default();
+        let port = extract_toml_num(&content, "port").unwrap_or(0);
+        let username = extract_toml_str(&content, "username");
+        let configured = !host.is_empty() && port > 0;
+
+        return Json(serde_json::json!({
+            "configured": configured,
+            "host": host,
+            "port": port,
+            "username": username,
+        }));
+    }
+
+    Json(serde_json::json!({
+        "configured": false,
+        "host": "",
+        "port": 0,
+        "username": null,
+    }))
+}
+
+fn extract_toml_str(content: &str, key: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("{} =", key)) || trimmed.starts_with(&format!("{}=", key)) {
+            if let Some(val) = trimmed.splitn(2, '=').nth(1) {
+                let val = val.trim().trim_matches('"').to_string();
+                if !val.is_empty() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_toml_num(content: &str, key: &str) -> Option<u16> {
+    extract_toml_str(content, key)?.parse().ok()
+}
+
+#[derive(Deserialize)]
+struct SaveProxyRequest {
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+async fn save_proxy_config(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(payload): Json<SaveProxyRequest>,
+) -> Json<serde_json::Value> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config_path = format!("{}/.cim/config.toml", home);
+
+    // 读取现有配置
+    let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+    // 更新或添加 [proxy] 下的 host/port/username
+    let new_content = update_proxy_in_toml(&content, &payload.host, payload.port, &payload.username);
+
+    if let Err(e) = std::fs::write(&config_path, &new_content) {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": format!("写入配置失败: {}", e)
+        }));
+    }
+
+    // 密码保存到 Keychain（macOS）
+    if let Some(ref pwd) = payload.password {
+        if !pwd.is_empty() {
+            #[cfg(target_os = "macos")]
+            {
+                use crate::storage::keychain;
+                let _ = keychain::save_password("com.cim.proxy", &payload.host, pwd);
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": "代理配置已保存"
+    }))
+}
+
+fn update_proxy_in_toml(content: &str, host: &str, port: u16, username: &Option<String>) -> String {
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let mut in_proxy = false;
+    let mut host_set = false;
+    let mut port_set = false;
+    let mut user_set = false;
+
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if trimmed == "[proxy]" { in_proxy = true; continue; }
+        if trimmed.starts_with('[') && trimmed != "[proxy]" { in_proxy = false; }
+
+        if in_proxy {
+            if trimmed.starts_with("host") {
+                *line = format!("host = \"{}\"", host);
+                host_set = true;
+            } else if trimmed.starts_with("port") {
+                *line = format!("port = {}", port);
+                port_set = true;
+            } else if trimmed.starts_with("username") {
+                *line = match username {
+                    Some(u) if !u.is_empty() => format!("username = \"{}\"", u),
+                    _ => "username = \"\"".to_string(),
+                };
+                user_set = true;
+            }
+        }
+    }
+
+    // 如果 [proxy] 区域没有这些字段，追加
+    if in_proxy && (!host_set || !port_set || !user_set) {
+        if !host_set { lines.push(format!("host = \"{}\"", host)); }
+        if !port_set { lines.push(format!("port = {}", port)); }
+        if !user_set {
+            if let Some(u) = username {
+                lines.push(format!("username = \"{}\"", u));
+            }
+        }
+    }
+
+    lines.join("\n")
 }
 
 #[derive(Deserialize)]

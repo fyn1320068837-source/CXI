@@ -6,743 +6,669 @@
     <title>CIM - Claude Instance Manager</title>
     <style>
         :root {
-            --accent:   #C8102E;
-            --accent-h: #a50d25;
-            --bg:       #f5f6f8;
-            --surface:  #ffffff;
-            --surface2: #f0f1f4;
-            --text:     #111520;
-            --muted:    #6b7585;
-            --border:   #e2e6ed;
-            --pass:     #16a34a;
-            --pass-bg:  #dcfce7;
-            --fail:     #dc2626;
-            --fail-bg:  #fee2e2;
-            --warn:     #d97706;
-            --warn-bg:  #fef3c7;
-            --grey:     #6b7585;
-            --grey-bg:  #f0f1f4;
-            --code-bg:  #1e2130;
-            --code-fg:  #e2e8f0;
+            --accent: #C8102E;
+            --accent-dark: #9e0d24;
+            --bg: #f7f6f4;
+            --surface: #ffffff;
+            --text: #1a1a1a;
+            --muted: #666;
+            --border: #e5e5e5;
+            --pass: #2e7d32;
+            --pass-bg: #e8f5e9;
+            --fail: #c62828;
+            --fail-bg: #ffebee;
+            --warn: #e65100;
+            --warn-bg: #fff3e0;
+            --grey: #616161;
+            --grey-bg: #f5f5f5;
         }
         @media (prefers-color-scheme: dark) {
             :root:not([data-theme="light"]) {
-                --bg:      #0d0f14;
-                --surface: #161b25;
-                --surface2:#1e2436;
-                --text:    #e8ecf5;
-                --muted:   #7a8394;
-                --border:  #252d3d;
-                --grey-bg: #1a1f2e;
+                --bg: #161616;
+                --surface: #242424;
+                --text: #f0f0f0;
+                --muted: #999;
+                --border: #333;
+                --grey-bg: #1e1e1e;
             }
         }
         :root[data-theme="dark"] {
-            --bg:      #0d0f14;
-            --surface: #161b25;
-            --surface2:#1e2436;
-            --text:    #e8ecf5;
-            --muted:   #7a8394;
-            --border:  #252d3d;
-            --grey-bg: #1a1f2e;
+            --bg: #161616;
+            --surface: #242424;
+            --text: #f0f0f0;
+            --muted: #999;
+            --border: #333;
         }
-
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, 'Inter', system-ui, sans-serif;
-            background: var(--bg); color: var(--text);
-            font-size: 14px; line-height: 1.5;
-            height: 100vh; display: flex; flex-direction: column;
-            overflow: hidden;
+            font-family: 'Songti SC', 'SimSun', 'Georgia', serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
         }
-
-        /* ── 顶部栏 ── */
-        .topbar {
+        /* ── header ── */
+        header {
             background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            display: flex; align-items: center;
-            padding: 0 20px; gap: 0; flex-shrink: 0;
-            height: 48px;
+            border-bottom: 3px solid var(--accent);
+            padding: 0 2rem;
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            align-items: center;
+            height: 56px;
         }
-        .logo {
-            display: flex; align-items: center; gap: 8px;
-            font-weight: 700; font-size: 15px;
-            padding-right: 20px;
-            border-right: 1px solid var(--border);
-            margin-right: 8px; flex-shrink: 0;
-        }
-        .logo-mark {
-            width: 24px; height: 24px; border-radius: 6px;
-            background: var(--accent); color: #fff;
-            font-size: 10px; font-weight: 800;
-            display: grid; place-items: center;
-            letter-spacing: .05em;
-        }
+        .header-brand { display: flex; align-items: baseline; gap: 1rem; }
+        header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: .04em; }
+        header .sub { color: var(--muted); font-size: .85rem; }
+        .header-right { display: flex; align-items: center; gap: .75rem; justify-content: flex-end; }
 
-        /* ── Tabs ── */
-        .tabs { display: flex; align-items: stretch; gap: 2px; flex: 1; }
-        .tab {
-            display: flex; align-items: center; gap: 6px;
-            padding: 0 16px; height: 48px;
-            font-size: 13px; font-weight: 500; cursor: pointer;
-            color: var(--muted); border-bottom: 2px solid transparent;
-            border-top: 2px solid transparent;
+        /* ── 顶部 Tab 切换 ── */
+        .header-tabs {
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+            gap: 4px;
+            height: 100%;
+        }
+        .htab {
+            display: flex; align-items: center; gap: 5px;
+            padding: 0 16px; height: 100%;
+            font-size: .85rem; font-weight: 500;
+            color: var(--muted); cursor: pointer;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -3px;
             transition: color .15s, border-color .15s;
             white-space: nowrap;
         }
-        .tab:hover { color: var(--text); }
-        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-        .tab .tab-icon { font-size: 15px; }
-        .tab .badge {
-            background: var(--accent); color: #fff;
-            font-size: 10px; font-weight: 700;
-            border-radius: 10px; padding: 1px 6px;
-            display: none;
-        }
-        .tab .badge.show { display: inline; }
-
-        .topbar-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-        .ws-indicator { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
-        .ws-dot { width: 7px; height: 7px; border-radius: 50%; background: #ccc; }
-        .ws-dot.ok { background: var(--pass); animation: blink 2.5s ease infinite; }
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+        .htab:hover { color: var(--text); }
+        .htab.active { color: var(--accent); border-bottom-color: var(--accent); }
         .theme-btn {
             background: none; border: 1px solid var(--border);
-            color: var(--muted); border-radius: 6px; padding: 4px 9px;
-            font-size: 12px; cursor: pointer;
+            color: var(--muted); border-radius: 4px; padding: .25rem .6rem;
+            cursor: pointer; font-size: .8rem;
         }
         .theme-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-        /* ── 内容区 ── */
-        .pane-wrap { flex: 1; overflow: hidden; position: relative; }
-        .pane { display: none; height: 100%; overflow-y: auto; padding: 24px 24px 32px; }
-        .pane.active { display: block; }
-        .pane-inner { max-width: 900px; margin: 0 auto; }
-
-        /* ── 通知横幅 ── */
+        /* ── banner ── */
         .banner {
-            display: none; padding: 10px 20px;
-            font-size: 13px; font-weight: 500;
-            border-left: 4px solid var(--fail);
-            background: var(--fail-bg); color: var(--fail);
+            display: none; padding: .85rem 2rem;
+            font-size: .9rem; font-weight: 500;
+            border-left: 4px solid;
+            background: var(--fail-bg); color: var(--fail); border-color: var(--fail);
         }
         .banner.show { display: block; }
 
-        /* ── 通用卡片 ── */
+        /* ── layout ── */
+        main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        section { margin-bottom: 2.5rem; }
+        h2 {
+            font-size: 1rem; font-weight: 600; letter-spacing: .08em;
+            text-transform: uppercase; color: var(--muted);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: .5rem; margin-bottom: 1.25rem;
+        }
+
+        /* ── cards ── */
         .card {
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: 10px; padding: 18px 20px; margin-bottom: 16px;
+            background: var(--surface); border-radius: 8px;
+            border: 1px solid var(--border); padding: 1.25rem;
         }
-        .card-title { font-size: 13px; font-weight: 600; margin-bottom: 14px;
-            padding-bottom: 10px; border-bottom: 1px solid var(--border);
-            display: flex; align-items: center; justify-content: space-between;
-        }
-        .row { display: flex; justify-content: space-between; align-items: center;
-            padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
-        .row:last-child { border-bottom: none; padding-bottom: 0; }
-        .row-key { color: var(--muted); }
-        .row-val { font-family: 'SF Mono','Menlo',monospace; font-size: 12px; }
-        .section-label {
-            font-size: 11px; font-weight: 600; letter-spacing: .1em;
-            text-transform: uppercase; color: var(--muted);
-            margin: 24px 0 10px;
-        }
-        .section-label:first-child { margin-top: 0; }
+        .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
 
-        /* ── 徽章 ── */
-        .chip {
-            display: inline-block; font-size: 11px; font-weight: 600;
-            padding: 2px 8px; border-radius: 4px;
-            font-family: 'SF Mono','Menlo',monospace; letter-spacing: .02em;
-        }
-        .chip-pass    { background: var(--pass-bg);  color: var(--pass); }
-        .chip-fail    { background: var(--fail-bg);  color: var(--fail); }
-        .chip-warn    { background: var(--warn-bg);  color: var(--warn); }
-        .chip-grey    { background: var(--grey-bg);  color: var(--grey); }
-        .chip-running { background: var(--pass-bg);  color: var(--pass); }
-        .chip-stopped { background: var(--grey-bg);  color: var(--grey); }
+        /* ── proxy card ── */
+        .proxy-row { display: flex; justify-content: space-between; align-items: center;
+            padding: .45rem 0; border-bottom: 1px solid var(--border); font-size: .92rem; }
+        .proxy-row:last-child { border-bottom: none; }
+        .proxy-row .lbl { color: var(--muted); }
+        .proxy-row .val { font-family: 'SF Mono', 'Menlo', monospace; font-size: .85rem; }
+        .proxy-actions { margin-top: 1rem; display: flex; gap: .5rem; }
 
-        /* ── 按钮 ── */
+        /* ── instance cards ── */
+        .inst-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .75rem; }
+        .inst-title { font-size: 1rem; font-weight: 600; }
+        .inst-label { font-size: .75rem; color: var(--muted); background: var(--grey-bg);
+            padding: .15rem .5rem; border-radius: 3px; }
+        .inst-row { display: flex; justify-content: space-between; font-size: .88rem;
+            padding: .3rem 0; border-bottom: 1px solid var(--border); }
+        .inst-row:last-of-type { border-bottom: none; }
+        .inst-actions { margin-top: .9rem; display: flex; gap: .5rem; }
+
+        /* ── buttons ── */
         .btn {
-            border: none; border-radius: 6px; padding: 6px 14px;
-            font-size: 13px; font-family: inherit; cursor: pointer;
-            font-weight: 500; transition: background .15s, opacity .15s;
+            border: none; border-radius: 4px; padding: .4rem 1.1rem;
+            font-size: .88rem; font-family: inherit; cursor: pointer;
+            transition: background .15s;
         }
-        .btn:disabled { opacity: .45; cursor: not-allowed; }
         .btn-primary { background: var(--accent); color: #fff; }
-        .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
-        .btn-ghost { background: var(--grey-bg); color: var(--text); border: 1px solid var(--border); }
-        .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-        .btn-sm { padding: 4px 10px; font-size: 12px; }
-        .btn-row { display: flex; gap: 8px; margin-top: 14px; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary { background: var(--grey-bg); color: var(--text); border: 1px solid var(--border); }
+        .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
 
-        /* ── 服务状态：左右两栏 ── */
-        .status-layout {
-            display: grid;
-            grid-template-columns: 260px 1fr;
-            gap: 20px;
-            height: 100%;
-            align-items: start;
+        /* ── badges ── */
+        .badge {
+            display: inline-block; padding: .15rem .6rem; border-radius: 3px;
+            font-size: .78rem; font-weight: 500; letter-spacing: .02em;
         }
-        @media (max-width: 800px) {
-            .status-layout { grid-template-columns: 1fr; }
-        }
-        .status-left { display: flex; flex-direction: column; }
-        .status-right { min-width: 0; }
-        .panel-label {
-            font-size: 11px; font-weight: 600; letter-spacing: .1em;
-            text-transform: uppercase; color: var(--muted);
-            margin-bottom: 8px;
-        }
-        .proxy-stat {
-            display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 8px;
-        }
-        .proxy-ip {
-            font-family: 'SF Mono','Menlo',monospace;
-            font-size: 13px; font-weight: 600;
-        }
-        .proxy-meta {
-            display: flex; justify-content: space-between;
-            font-size: 12px; color: var(--muted);
-            padding-top: 8px; border-top: 1px solid var(--border);
-        }
-        .meta-latency { font-family: 'SF Mono','Menlo',monospace; }
+        .badge-pass    { background: var(--pass-bg);   color: var(--pass); }
+        .badge-fail    { background: var(--fail-bg);   color: var(--fail); }
+        .badge-warn    { background: var(--warn-bg);   color: var(--warn); }
+        .badge-grey    { background: var(--grey-bg);   color: var(--grey); }
+        .badge-running { background: var(--pass-bg);   color: var(--pass); }
+        .badge-stopped { background: var(--grey-bg);   color: var(--grey); }
+        .badge-frozen  { background: var(--warn-bg);   color: var(--warn); }
 
-        /* ── 实例网格：2×2 ── */
-        .inst-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
+        /* ── ws dot ── */
+        .ws-dot {
+            display: inline-block; width: 7px; height: 7px;
+            border-radius: 50%; background: #ccc; margin-right: .4rem;
+            vertical-align: middle;
+        }
+        .ws-dot.connected { background: var(--pass); }
+        .ws-status { font-size: .78rem; color: var(--muted); display: flex; align-items: center; }
+
+        /* ── 代理配置表单 & 弹窗 ── */
+        .form-label {
+            display: block; font-size: .78rem; font-weight: 600;
+            color: var(--muted); margin-bottom: .35rem; letter-spacing: .02em;
+        }
+        .form-input {
+            width: 100%; padding: .45rem .65rem;
+            border: 1px solid var(--border); border-radius: 5px;
+            font-size: .88rem; font-family: 'SF Mono', 'Menlo', monospace;
+            background: var(--bg); color: var(--text);
+            transition: border-color .15s;
+        }
+        .form-input:focus { outline: none; border-color: var(--accent); }
+        .form-group { display: flex; flex-direction: column; }
+        .modal-backdrop {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,.45); backdrop-filter: blur(2px);
+        }
+        .modal-box {
+            position: relative; z-index: 1;
+            background: var(--surface); border-radius: 12px;
+            box-shadow: 0 24px 60px rgba(0,0,0,.18);
+            width: min(560px, calc(100vw - 32px));
+            overflow: hidden;
+            animation: modal-in .18s ease;
+        }
+        .modal-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 1rem 1.25rem .9rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .modal-title { font-size: 1rem; font-weight: 600; }
+        .modal-close {
+            background: none; border: none; cursor: pointer;
+            color: var(--muted); font-size: 1rem; padding: .25rem .5rem;
+            border-radius: 4px; line-height: 1;
+            transition: background .15s, color .15s;
+        }
+        .modal-close:hover { background: var(--grey-bg); color: var(--text); }
+        .modal-body { padding: 1.25rem; }
+        .modal-footer {
+            display: flex; align-items: center; gap: .75rem;
+            padding: .9rem 1.25rem 1rem;
+            border-top: 1px solid var(--border);
+            background: var(--grey-bg);
+        }
+        @keyframes modal-in {
+            from { opacity: 0; transform: translateY(-10px) scale(.97); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
         }
         @media (max-width: 600px) {
-            .inst-grid { grid-template-columns: 1fr; }
-        }
-        .inst-val {
-            font-size: 11px;
-            color: var(--muted);
-        }
-        .inst-card {
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: 10px; overflow: hidden;
-        }
-        .inst-top {
-            padding: 14px 16px 12px;
-            border-bottom: 1px solid var(--border);
-            display: flex; align-items: center; justify-content: space-between;
-        }
-        .inst-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
-        .inst-letter {
-            width: 22px; height: 22px; border-radius: 5px;
-            background: var(--accent); color: #fff;
-            font-size: 11px; font-weight: 800; display: grid; place-items: center;
-        }
-        .inst-body { padding: 10px 16px; }
-        .inst-row { display: flex; justify-content: space-between; font-size: 12px;
-            padding: 5px 0; border-bottom: 1px solid var(--border); }
-        .inst-row:last-of-type { border-bottom: none; }
-        .inst-key { color: var(--muted); }
-        .inst-actions { padding: 10px 16px; display: flex; gap: 8px; border-top: 1px solid var(--border); }
-
-        /* ── 日志表 ── */
-        .log-toolbar {
-            display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
-        }
-        .log-filter {
-            padding: 5px 10px; border: 1px solid var(--border);
-            border-radius: 6px; font-size: 12px; background: var(--surface);
-            color: var(--text); font-family: inherit; cursor: pointer;
-        }
-        .log-filter:focus { outline: none; border-color: var(--accent); }
-        .log-search {
-            flex: 1; min-width: 160px; padding: 5px 10px;
-            border: 1px solid var(--border); border-radius: 6px;
-            font-size: 12px; background: var(--surface); color: var(--text);
-            font-family: inherit;
-        }
-        .log-search:focus { outline: none; border-color: var(--accent); }
-        .log-count { font-size: 12px; color: var(--muted); margin-left: auto; }
-
-        .log-wrap { overflow-x: auto; }
-        table.log-table {
-            width: 100%; border-collapse: collapse;
-            font-size: 12px; font-family: 'SF Mono','Menlo',monospace;
-        }
-        .log-table th {
-            text-align: left; padding: 6px 10px;
-            font-size: 10px; font-weight: 600; letter-spacing: .08em;
-            text-transform: uppercase; color: var(--muted);
-            border-bottom: 2px solid var(--border); position: sticky; top: 0;
-            background: var(--surface); white-space: nowrap;
-        }
-        .log-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-        .log-table tr:last-child td { border-bottom: none; }
-        .log-table tr:hover td { background: var(--surface2); }
-        .log-ts { color: var(--muted); white-space: nowrap; }
-        .log-inst { }
-        .log-method { font-weight: 600; }
-        .log-url { color: var(--muted); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .log-status .chip { font-size: 10px; padding: 1px 6px; }
-        .log-lat { color: var(--muted); text-align: right; white-space: nowrap; }
-        .log-size { color: var(--muted); text-align: right; white-space: nowrap; }
-        .log-empty {
-            text-align: center; padding: 48px 24px; color: var(--muted); font-size: 13px;
-            font-family: -apple-system, system-ui, sans-serif;
-        }
-        .live-dot {
-            width: 7px; height: 7px; border-radius: 50%; background: var(--pass);
-            display: inline-block; margin-right: 6px;
-            animation: blink 1.5s ease infinite;
+            .modal-box > .modal-body > div[style*="grid-template-columns:110px"] {
+                display: flex !important; flex-direction: column;
+            }
         }
 
-        /* ── 安装区域 ── */
-        .step { display: flex; gap: 14px; margin-bottom: 20px; }
+        /* ── firewall section ── */
+        .firewall-row { display: flex; justify-content: space-between; align-items: center;
+            font-size: .9rem; }
+        .firewall-note { margin-top: .6rem; font-size: .8rem; color: var(--muted); }
+
+        /* ── install steps ── */
+        .install-step {
+            display: flex; gap: 16px; align-items: flex-start;
+            padding: 16px 0; border-bottom: 1px solid var(--border);
+        }
+        .install-step:last-child { border-bottom: none; padding-bottom: 0; }
         .step-num {
-            flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%;
+            flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
             background: var(--accent); color: #fff;
-            font-size: 11px; font-weight: 700;
+            font-size: .78rem; font-weight: 700;
             display: flex; align-items: center; justify-content: center;
             margin-top: 2px;
         }
         .step-body { flex: 1; min-width: 0; }
-        .step-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-        .step-desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 8px; }
-        .code-block {
-            background: var(--code-bg); color: var(--code-fg);
-            border-radius: 8px; padding: 12px 16px;
-            font-family: 'SF Mono','Menlo',monospace; font-size: 12px;
-            white-space: pre; overflow-x: auto; line-height: 1.8;
-            position: relative; margin-bottom: 8px;
+        .step-title { font-size: .9rem; font-weight: 600; margin-bottom: 8px; }
+        .step-desc { font-size: .82rem; color: var(--muted); line-height: 1.6; }
+        .step-code {
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 6px; padding: 10px 14px;
+            font-family: 'SF Mono', 'Menlo', monospace; font-size: .8rem;
+            white-space: pre; overflow-x: auto;
+            color: var(--text); line-height: 1.7; margin-bottom: 8px;
         }
-        .copy-btn {
-            position: absolute; top: 8px; right: 8px;
-            background: rgba(255,255,255,.12); border: none;
-            color: rgba(255,255,255,.7); border-radius: 5px;
-            padding: 3px 10px; font-size: 11px; cursor: pointer;
-            font-family: inherit;
-            transition: background .15s;
+        .btn-copy {
+            background: none; border: 1px solid var(--border);
+            color: var(--muted); border-radius: 5px;
+            padding: 3px 12px; font-size: .78rem;
+            cursor: pointer; font-family: inherit;
+            transition: border-color .15s, color .15s;
         }
-        .copy-btn:hover { background: rgba(255,255,255,.22); }
-        .copy-btn.ok { color: #4ade80; }
-        .req-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
-        .req-pill {
-            background: var(--grey-bg); border: 1px solid var(--border);
-            border-radius: 20px; padding: 4px 12px; font-size: 12px;
-        }
-
-        @media (max-width: 600px) {
-            .tab span.tab-text { display: none; }
-            .pane { padding: 16px; }
-        }
+        .btn-copy:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-copy.copied { border-color: var(--pass); color: var(--pass); }
     </style>
 </head>
 <body>
 
-<!-- ── 顶部栏 ── -->
-<div class="topbar">
-    <div class="logo">
-        <div class="logo-mark">CIM</div>
-        <span>Claude Instance Manager</span>
-    </div>
-    <div class="tabs">
-        <div class="tab active" onclick="switchTab('status')" id="tab-status">
-            <span class="tab-icon">📡</span>
-            <span class="tab-text">服务状态</span>
+<!-- ── 代理配置弹窗 ── -->
+<div id="proxy-modal" style="display:none;position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center">
+    <div class="modal-backdrop" onclick="closeProxyModal()"></div>
+    <div class="modal-box">
+        <div class="modal-header">
+            <span class="modal-title">配置代理</span>
+            <button class="modal-close" onclick="closeProxyModal()">✕</button>
         </div>
-        <div class="tab" onclick="switchTab('logs')" id="tab-logs">
-            <span class="tab-icon">📋</span>
-            <span class="tab-text">日志管理</span>
-            <span class="badge" id="log-badge">0</span>
+        <div class="modal-body">
+            <div style="display:grid;grid-template-columns:110px 1fr 90px;gap:.7rem;margin-bottom:.7rem">
+                <div class="form-group">
+                    <label class="form-label">协议</label>
+                    <select class="form-input" id="cfg-proto" style="font-family:inherit" oninput="updatePreview()">
+                        <option value="socks5">socks5</option>
+                        <option value="http">http</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">代理地址 <span style="color:var(--accent)">*</span></label>
+                    <input class="form-input" id="cfg-host" type="text" placeholder="48.44.59.210" autocomplete="off" oninput="updatePreview()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">端口 <span style="color:var(--accent)">*</span></label>
+                    <input class="form-input" id="cfg-port" type="number" placeholder="48793" min="1" max="65535" oninput="updatePreview()">
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-bottom:.7rem">
+                <div class="form-group">
+                    <label class="form-label">用户名</label>
+                    <input class="form-input" id="cfg-username" type="text" placeholder="（可选）" autocomplete="off" oninput="updatePreview()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">密码 <span style="font-size:.73rem;color:var(--muted);font-weight:400">存入 Keychain</span></label>
+                    <div style="position:relative">
+                        <input class="form-input" id="cfg-password" type="password" placeholder="••••••••" autocomplete="new-password" style="padding-right:2.4rem" oninput="updatePreview()">
+                        <button type="button" onclick="togglePwd()" style="position:absolute;right:.5rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:.85rem;line-height:1">👁</button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">预览</label>
+                <div id="cfg-preview" style="font-family:'SF Mono',Menlo,monospace;font-size:.8rem;color:var(--muted);padding:.45rem .65rem;background:var(--grey-bg);border-radius:5px;border:1px solid var(--border)">socks5://user:pass@host:port</div>
+            </div>
         </div>
-        <div class="tab" onclick="switchTab('install')" id="tab-install">
-            <span class="tab-icon">📦</span>
-            <span class="tab-text">安装管理</span>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="saveProxyConfig()">保存配置</button>
+            <button class="btn btn-secondary" onclick="closeProxyModal()">取消</button>
+            <span id="cfg-msg" style="font-size:.82rem;margin-left:.5rem"></span>
         </div>
-    </div>
-    <div class="topbar-right">
-        <div class="ws-indicator">
-            <span class="ws-dot" id="ws-dot"></span>
-            <span id="ws-label">未连接</span>
-        </div>
-        <button class="theme-btn" onclick="toggleTheme()">🌓</button>
     </div>
 </div>
 
+<header>
+    <div class="header-brand">
+        <h1>CIM</h1>
+        <span class="sub">Claude Instance Manager &nbsp;v1.0.0</span>
+    </div>
+    <div class="header-tabs">
+        <div class="htab active" id="htab-status" onclick="switchSection('status')">📡 服务状态</div>
+        <div class="htab"        id="htab-logs"   onclick="switchSection('logs')">📋 日志管理</div>
+        <div class="htab"        id="htab-install" onclick="switchSection('install')">📦 安装管理</div>
+    </div>
+    <div class="header-right">
+        <span class="ws-status"><span class="ws-dot" id="ws-dot"></span><span id="ws-label">未连接</span></span>
+        <button class="theme-btn" onclick="toggleTheme()">🌓</button>
+    </div>
+</header>
+
 <div class="banner" id="banner"></div>
 
-<div class="pane-wrap">
-
-    <!-- ══ TAB 1：服务状态 ══ -->
-    <div class="pane active" id="pane-status">
-      <div class="pane-inner">
-        <div class="status-layout">
-
-            <!-- 左侧：代理 + 防火墙 -->
-            <div class="status-left">
-                <div class="panel-label">代理状态</div>
-                <div class="card">
-                    <div class="proxy-stat">
-                        <span id="proxy-status"><span class="chip chip-grey">检测中…</span></span>
-                        <span class="proxy-ip" id="proxy-ip">—</span>
-                    </div>
-                    <div class="proxy-meta">
-                        <span id="proxy-geo" class="meta-item">—</span>
-                        <span id="proxy-latency" class="meta-item meta-latency">—</span>
-                    </div>
-                    <div class="btn-row" style="margin-top:12px">
-                        <button class="btn btn-primary btn-sm" onclick="testProxy()">测试连接</button>
-                        <button class="btn btn-ghost btn-sm" onclick="showProxyConfig()">配置代理</button>
-                    </div>
-                </div>
-
-                <div class="panel-label" style="margin-top:16px">防火墙</div>
-                <div class="card">
-                    <div class="row">
-                        <span class="row-key">PF 规则</span>
-                        <span id="firewall-status"><span class="chip chip-warn">软隔离模式</span></span>
-                    </div>
-                    <div style="margin-top:10px;font-size:11px;color:var(--muted);line-height:1.6">
-                        安装内核级防火墙兜底：<br>
-                        <code style="font-size:11px">sudo cim install-firewall</code>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 右侧：四实例 2×2 -->
-            <div class="status-right">
-                <div class="panel-label">实例管理</div>
-                <div class="inst-grid">
-
-                    <div class="inst-card">
-                        <div class="inst-top">
-                            <div class="inst-name"><div class="inst-letter">A</div>Claude Code</div>
-                            <span id="code-status"><span class="chip chip-stopped">已停止</span></span>
-                        </div>
-                        <div class="inst-body">
-                            <div class="inst-row">
-                                <span class="inst-key">隔离</span>
-                                <code class="inst-val">env HOME=</code>
-                            </div>
-                            <div class="inst-row">
-                                <span class="inst-key">验证</span>
-                                <span id="code-validation"><span class="chip chip-grey">UNKNOWN</span></span>
-                            </div>
-                        </div>
-                        <div class="inst-actions">
-                            <button class="btn btn-primary btn-sm" id="code-launch" onclick="launch('code')">启动</button>
-                            <button class="btn btn-ghost btn-sm"   id="code-stop"   onclick="stop('code')">停止</button>
-                        </div>
-                    </div>
-
-                    <div class="inst-card">
-                        <div class="inst-top">
-                            <div class="inst-name"><div class="inst-letter">B</div>Claude Desktop</div>
-                            <span id="desktop-status"><span class="chip chip-stopped">已停止</span></span>
-                        </div>
-                        <div class="inst-body">
-                            <div class="inst-row">
-                                <span class="inst-key">隔离</span>
-                                <code class="inst-val">open -a Claude</code>
-                            </div>
-                            <div class="inst-row">
-                                <span class="inst-key">验证</span>
-                                <span id="desktop-validation"><span class="chip chip-grey">UNSUPPORTED</span></span>
-                            </div>
-                            <div style="margin-top:6px;font-size:11px;color:var(--muted)">软隔离，进程级验证不可用</div>
-                        </div>
-                        <div class="inst-actions">
-                            <button class="btn btn-primary btn-sm" id="desktop-launch" onclick="launch('desktop')">启动</button>
-                            <button class="btn btn-ghost btn-sm"   id="desktop-stop"   onclick="stop('desktop')">停止</button>
-                        </div>
-                    </div>
-
-                    <div class="inst-card">
-                        <div class="inst-top">
-                            <div class="inst-name"><div class="inst-letter">C</div>VS Code 扩展</div>
-                            <span id="vscode-status"><span class="chip chip-stopped">已停止</span></span>
-                        </div>
-                        <div class="inst-body">
-                            <div class="inst-row">
-                                <span class="inst-key">隔离</span>
-                                <code class="inst-val">--user-data-dir</code>
-                            </div>
-                            <div class="inst-row">
-                                <span class="inst-key">验证</span>
-                                <span id="vscode-validation"><span class="chip chip-grey">UNKNOWN</span></span>
-                            </div>
-                        </div>
-                        <div class="inst-actions">
-                            <button class="btn btn-primary btn-sm" id="vscode-launch" onclick="launch('vscode')">启动</button>
-                            <button class="btn btn-ghost btn-sm"   id="vscode-stop"   onclick="stop('vscode')">停止</button>
-                        </div>
-                    </div>
-
-                    <div class="inst-card">
-                        <div class="inst-top">
-                            <div class="inst-name"><div class="inst-letter">D</div>Claude Web</div>
-                            <span id="web-status"><span class="chip chip-stopped">已停止</span></span>
-                        </div>
-                        <div class="inst-body">
-                            <div class="inst-row">
-                                <span class="inst-key">隔离</span>
-                                <code class="inst-val">--user-data-dir</code>
-                            </div>
-                            <div class="inst-row">
-                                <span class="inst-key">验证</span>
-                                <span id="web-validation"><span class="chip chip-grey">UNKNOWN</span></span>
-                            </div>
-                        </div>
-                        <div class="inst-actions">
-                            <button class="btn btn-primary btn-sm" id="web-launch" onclick="launch('web')">启动</button>
-                            <button class="btn btn-ghost btn-sm"   id="web-stop"   onclick="stop('web')">停止</button>
-                        </div>
-                    </div>
-
-                </div>
-            </div>
-
-        </div>
-      </div><!-- /pane-inner -->
-    </div><!-- /pane-status -->
-
-    <!-- ══ TAB 2：日志管理 ══ -->
-    <div class="pane" id="pane-logs">
-      <div class="pane-inner">
-        <div class="log-toolbar">
-            <span><span class="live-dot"></span>实时捕获</span>
-            <select class="log-filter" id="filter-inst" onchange="renderLogs()">
-                <option value="">全部实例</option>
-                <option value="code">A · Code</option>
-                <option value="desktop">B · Desktop</option>
-                <option value="vscode">C · VSCode</option>
-                <option value="web">D · Web</option>
-            </select>
-            <select class="log-filter" id="filter-status" onchange="renderLogs()">
-                <option value="">全部状态</option>
-                <option value="2">2xx 成功</option>
-                <option value="3">3xx 跳转</option>
-                <option value="4">4xx 错误</option>
-                <option value="5">5xx 异常</option>
-            </select>
-            <input class="log-search" id="log-search" placeholder="搜索 URL / 域名…" oninput="renderLogs()">
-            <span class="log-count" id="log-count">0 条记录</span>
-            <button class="btn btn-ghost btn-sm" onclick="clearLogs()">清空</button>
-        </div>
-        <div class="log-wrap">
-            <table class="log-table">
-                <thead>
-                    <tr>
-                        <th>时间</th>
-                        <th>实例</th>
-                        <th>方法</th>
-                        <th>URL</th>
-                        <th>状态</th>
-                        <th>延迟</th>
-                        <th>大小</th>
-                    </tr>
-                </thead>
-                <tbody id="log-tbody">
-                    <tr><td colspan="7" class="log-empty">暂无日志<br><span style="font-size:11px;margin-top:4px;display:block">启动实例后，网络请求将在此处实时显示</span></td></tr>
-                </tbody>
-            </table>
-        </div>
-      </div><!-- /pane-inner -->
-    </div><!-- /pane-logs -->
-
-    <!-- ══ TAB 3：安装管理 ══ -->
-    <div class="pane" id="pane-install">
-      <div class="pane-inner">
-
-        <div class="section-label">系统要求</div>
-        <div class="card" style="margin-bottom:24px">
-            <div class="req-row">
-                <div class="req-pill">macOS 13+</div>
-                <div class="req-pill">Apple Silicon (arm64)</div>
-                <div class="req-pill">Intel x86_64</div>
-                <div class="req-pill">Rust 1.80+</div>
-                <div class="req-pill">curl</div>
-            </div>
-        </div>
-
-        <div class="section-label">安装步骤</div>
-
-        <div class="step">
-            <div class="step-num">1</div>
-            <div class="step-body">
-                <div class="step-title">克隆仓库并安装</div>
-                <div class="code-block" id="cb1">git clone https://github.com/fyn1320068837-source/CXI.git
-cd CXI
-./install.sh<button class="copy-btn" onclick="copyBlock('cb1',this)">复制</button></div>
-                <div class="step-desc">安装脚本将自动构建二进制、下载 sing-box、注册 launchd 服务并启动守护进程。</div>
-            </div>
-        </div>
-
-        <div class="step">
-            <div class="step-num">2</div>
-            <div class="step-body">
-                <div class="step-title">配置 SOCKS5 代理</div>
-                <div class="code-block" id="cb2">nano ~/.cim/config.toml<button class="copy-btn" onclick="copyBlock('cb2',this)">复制</button></div>
-                <div class="step-desc">填入住宅代理的 host / port / 用户名，密码通过 macOS Keychain 单独保存，不写入配置文件。修改后重启服务：</div>
-                <div class="code-block" id="cb3">launchctl unload  ~/Library/LaunchAgents/com.cim.daemon.plist
-launchctl load    ~/Library/LaunchAgents/com.cim.daemon.plist<button class="copy-btn" onclick="copyBlock('cb3',this)">复制</button></div>
-            </div>
-        </div>
-
-        <div class="step">
-            <div class="step-num">3</div>
-            <div class="step-body">
-                <div class="step-title">安装 PF 防火墙兜底规则（推荐）</div>
-                <div class="code-block" id="cb4">sudo cim install-firewall<button class="copy-btn" onclick="copyBlock('cb4',this)">复制</button></div>
-                <div class="step-desc">提供内核级 fail-closed 保护。代理故障时自动阻断所有实例的公网直连，防止意外泄漏。</div>
-            </div>
-        </div>
-
-        <div class="step">
-            <div class="step-num">4</div>
-            <div class="step-body">
-                <div class="step-title">远程访问（SSH 端口转发）</div>
-                <div class="code-block" id="cb5">ssh -L 8080:localhost:8080 youzhisan@100.95.96.47<button class="copy-btn" onclick="copyBlock('cb5',this)">复制</button></div>
-                <div class="step-desc">随后在本机打开 <code>http://localhost:8080</code> 即可访问远程 Mac Studio 的控制台。</div>
-            </div>
-        </div>
-
-        <div class="step">
-            <div class="step-num">5</div>
-            <div class="step-body">
-                <div class="step-title">卸载</div>
-                <div class="code-block" id="cb6">./uninstall.sh<button class="copy-btn" onclick="copyBlock('cb6',this)">复制</button></div>
-                <div class="step-desc">完整移除守护进程、launchd 服务、PF 规则和二进制文件，可选择是否保留 <code>~/.cim/</code> 数据。</div>
-            </div>
-        </div>
-
-        <div class="section-label" style="margin-top:8px">GitHub</div>
+<main>
+    <!-- ══ 服务状态 ══ -->
+    <div id="sec-status">
+    <!-- ── 代理状态 ── -->
+    <section>
+        <h2>代理状态</h2>
         <div class="card">
-            <div class="row">
-                <span class="row-key">仓库地址</span>
-                <a href="https://github.com/fyn1320068837-source/CXI" target="_blank"
-                   style="color:var(--accent);font-size:12px;font-family:monospace">
-                    github.com/fyn1320068837-source/CXI
-                </a>
+            <div class="proxy-row">
+                <span class="lbl">状态</span>
+                <span id="proxy-status"><span class="badge badge-grey">检测中…</span></span>
             </div>
-            <div class="row">
-                <span class="row-key">版本</span>
-                <span class="chip chip-pass">v1.0.0</span>
+            <div class="proxy-row">
+                <span class="lbl">出口 IP</span>
+                <span class="val" id="proxy-ip">—</span>
             </div>
-            <div class="row">
-                <span class="row-key">平台</span>
-                <span style="font-size:12px">macOS 13+ · arm64 · x86_64</span>
+            <div class="proxy-row">
+                <span class="lbl">地理位置</span>
+                <span class="val" id="proxy-geo">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">延迟</span>
+                <span class="val" id="proxy-latency">—</span>
+            </div>
+            <div class="proxy-actions">
+                <button class="btn btn-primary" onclick="testProxy()">测试连接</button>
+                <button class="btn btn-secondary" onclick="openProxyModal()">配置代理</button>
             </div>
         </div>
+    </section>
 
-      </div><!-- /pane-inner -->
-    </div><!-- /pane-install -->
+    <!-- ── 实例管理 ── -->
+    <section>
+        <h2>实例管理</h2>
+        <div class="grid2">
 
-</div><!-- /pane-wrap -->
+            <div class="card" id="inst-code">
+                <div class="inst-header">
+                    <span class="inst-title">A · Claude Code</span>
+                    <span class="inst-label">CLI</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="code-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="code-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="code-launch-btn" onclick="launch('code')">启动</button>
+                    <button class="btn btn-secondary"  id="code-stop-btn"   onclick="stop('code')">停止</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-desktop">
+                <div class="inst-header">
+                    <span class="inst-title">B · Claude Desktop</span>
+                    <span class="inst-label">App</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="desktop-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="desktop-validation"><span class="badge badge-grey">UNSUPPORTED</span></span>
+                </div>
+                <div class="inst-row" style="color: var(--muted); font-size:.8rem;">
+                    <span colspan="2">软隔离模式，网络验证不可用</span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="desktop-launch-btn" onclick="launch('desktop')">启动</button>
+                    <button class="btn btn-secondary"  id="desktop-stop-btn"   onclick="stop('desktop')">停止</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-vscode">
+                <div class="inst-header">
+                    <span class="inst-title">C · VS Code 扩展</span>
+                    <span class="inst-label">Extension</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="vscode-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="vscode-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="vscode-launch-btn" onclick="launch('vscode')">启动</button>
+                    <button class="btn btn-secondary"  id="vscode-stop-btn"   onclick="stop('vscode')">停止</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-web">
+                <div class="inst-header">
+                    <span class="inst-title">D · Claude Web</span>
+                    <span class="inst-label">Chromium</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="web-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="web-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="web-launch-btn" onclick="launch('web')">启动</button>
+                    <button class="btn btn-secondary"  id="web-stop-btn"   onclick="stop('web')">停止</button>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- ── 防火墙 ── -->
+    <section>
+        <h2>防火墙</h2>
+        <div class="card">
+            <div class="firewall-row">
+                <span>PF 规则状态</span>
+                <span id="firewall-status"><span class="badge badge-warn">软隔离模式</span></span>
+            </div>
+            <p class="firewall-note">
+                安装 PF 规则可提供内核级断线保护：<code>sudo cim install-firewall</code>
+            </p>
+        </div>
+    </section>
+    </div><!-- /sec-status -->
+
+    <!-- ══ 日志管理 ══ -->
+    <div id="sec-logs" hidden>
+    <section>
+        <h2>日志管理</h2>
+        <div class="card">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+                <span style="font-size:13px;color:var(--muted)">
+                    <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--pass);margin-right:6px;animation:pulse 2s infinite"></span>
+                    实时捕获
+                </span>
+                <select id="filter-inst" onchange="renderLogs()" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface);color:var(--text)">
+                    <option value="">全部实例</option>
+                    <option value="code">A · Code</option>
+                    <option value="desktop">B · Desktop</option>
+                    <option value="vscode">C · VSCode</option>
+                    <option value="web">D · Web</option>
+                </select>
+                <select id="filter-status" onchange="renderLogs()" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface);color:var(--text)">
+                    <option value="">全部状态</option>
+                    <option value="2">2xx 成功</option>
+                    <option value="4">4xx 错误</option>
+                    <option value="5">5xx 异常</option>
+                </select>
+                <input id="log-search" placeholder="搜索 URL…" oninput="renderLogs()" style="flex:1;min-width:140px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface);color:var(--text)">
+                <button class="btn btn-secondary" style="padding:.3rem .8rem;font-size:.8rem" onclick="clearLogs()">清空</button>
+                <span id="log-count" style="font-size:12px;color:var(--muted);margin-left:auto">0 条</span>
+            </div>
+            <div style="overflow-x:auto">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:'SF Mono',Menlo,monospace">
+                    <thead>
+                        <tr style="border-bottom:2px solid var(--border)">
+                            <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap">时间</th>
+                            <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">实例</th>
+                            <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">方法</th>
+                            <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">URL</th>
+                            <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">状态</th>
+                            <th style="text-align:right;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap">延迟</th>
+                            <th style="text-align:right;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap">大小</th>
+                        </tr>
+                    </thead>
+                    <tbody id="log-tbody">
+                        <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted);font-family:sans-serif;font-size:13px">
+                            暂无日志<br><span style="font-size:11px;display:block;margin-top:4px">启动实例后，网络请求将在此处实时显示</span>
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+    </div><!-- /sec-logs -->
+
+    <!-- ══ 安装管理 ══ -->
+    <div id="sec-install" hidden>
+        <div class="card">
+            <div class="install-step">
+                <div class="step-num">1</div>
+                <div class="step-body">
+                    <div class="step-title">克隆仓库并安装</div>
+                    <div class="step-code" id="code-install">git clone https://github.com/fyn1320068837-source/CXI.git
+cd CXI
+./install.sh</div>
+                    <button class="btn-copy" onclick="copyCode('code-install')">复制</button>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">2</div>
+                <div class="step-body">
+                    <div class="step-title">打开控制台</div>
+                    <div class="step-code" id="code-open">open http://localhost:8080</div>
+                    <button class="btn-copy" onclick="copyCode('code-open')">复制</button>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">3</div>
+                <div class="step-body">
+                    <div class="step-title">配置 SOCKS5 代理</div>
+                    <div class="step-desc">在控制台中点击「配置代理」，填入住宅代理信息。密码自动保存到 macOS Keychain。</div>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">4</div>
+                <div class="step-body">
+                    <div class="step-title">安装防火墙规则（推荐）</div>
+                    <div class="step-code" id="code-fw">sudo cim install-firewall</div>
+                    <button class="btn-copy" onclick="copyCode('code-fw')">复制</button>
+                </div>
+            </div>
+            <div class="install-step">
+                <div class="step-num">5</div>
+                <div class="step-body">
+                    <div class="step-title">卸载</div>
+                    <div class="step-code" id="code-uninstall">./uninstall.sh</div>
+                    <button class="btn-copy" onclick="copyCode('code-uninstall')">复制</button>
+                </div>
+            </div>
+        </div>
+    </section>
+    </div><!-- /sec-install -->
+</main>
 
 <script>
-// ── Tab 切换 ──────────────────────────────────────────────
-function switchTab(name) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
-    document.getElementById('tab-' + name).classList.add('active');
-    document.getElementById('pane-' + name).classList.add('active');
+// ── Tab 切换 ─────────────────────────────────────────────
+let logs = [];
+let newLogCount = 0;
+
+function switchSection(name) {
+    ['status','logs','install'].forEach(n => {
+        document.getElementById('sec-' + n).hidden = (n !== name);
+        document.getElementById('htab-' + n).classList.toggle('active', n === name);
+    });
     if (name === 'logs') {
-        document.getElementById('log-badge').classList.remove('show');
         newLogCount = 0;
+        document.getElementById('htab-logs').textContent = '📋 日志管理';
+        renderLogs();
     }
     try { localStorage.setItem('cim-tab', name); } catch {}
 }
 try {
     const t = localStorage.getItem('cim-tab');
-    if (t) switchTab(t);
+    if (t) switchSection(t);
 } catch {}
 
-// ── 日志数据 ──────────────────────────────────────────────
-let logs = [];        // 全量日志
-let newLogCount = 0;  // 未读计数
-
+// ── 日志 ─────────────────────────────────────────────────
 function addLog(entry) {
-    logs.unshift(entry); // 最新在前
+    logs.unshift(entry);
     if (logs.length > 2000) logs.pop();
-
-    // 如果当前不在日志 tab，显示角标
-    if (!document.getElementById('pane-logs').classList.contains('active')) {
+    if (document.getElementById('sec-logs').hidden) {
         newLogCount++;
-        const badge = document.getElementById('log-badge');
-        badge.textContent = newLogCount > 99 ? '99+' : newLogCount;
-        badge.classList.add('show');
+        document.getElementById('htab-logs').textContent = '📋 日志管理 (' + (newLogCount > 99 ? '99+' : newLogCount) + ')';
     } else {
         renderLogs();
     }
 }
 
 function renderLogs() {
-    const instFilter   = document.getElementById('filter-inst').value;
-    const statusFilter = document.getElementById('filter-status').value;
-    const search       = document.getElementById('log-search').value.toLowerCase();
+    const instF   = document.getElementById('filter-inst')?.value || '';
+    const statusF = document.getElementById('filter-status')?.value || '';
+    const search  = (document.getElementById('log-search')?.value || '').toLowerCase();
 
     const filtered = logs.filter(l => {
-        if (instFilter   && l.instance !== instFilter) return false;
-        if (statusFilter && !String(l.status).startsWith(statusFilter)) return false;
-        if (search && !l.url.toLowerCase().includes(search)) return false;
+        if (instF   && l.instance !== instF) return false;
+        if (statusF && !String(l.status).startsWith(statusF)) return false;
+        if (search  && !l.url.toLowerCase().includes(search)) return false;
         return true;
     });
 
-    document.getElementById('log-count').textContent = filtered.length + ' 条记录';
+    document.getElementById('log-count').textContent = filtered.length + ' 条';
 
     const tbody = document.getElementById('log-tbody');
-    if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="log-empty">暂无匹配记录</td></tr>`;
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted);font-family:sans-serif;font-size:13px">暂无匹配记录</td></tr>';
         return;
     }
 
     tbody.innerHTML = filtered.map(l => {
-        const sc = l.status >= 500 ? 'fail' : l.status >= 400 ? 'warn' : l.status >= 300 ? 'warn' : 'pass';
+        const sc = l.status >= 500 ? 'fail' : l.status >= 400 ? 'warn' : 'pass';
         const lat = l.latency_ms < 1000 ? l.latency_ms + 'ms' : (l.latency_ms/1000).toFixed(1) + 's';
-        const sz  = l.size_bytes > 0 ? formatBytes(l.size_bytes) : '—';
-        const instLabel = {code:'A',desktop:'B',vscode:'C',web:'D'}[l.instance] || l.instance;
-        return `<tr>
-            <td class="log-ts">${l.timestamp}</td>
-            <td class="log-inst"><span class="chip chip-grey">${instLabel}</span></td>
-            <td class="log-method" style="color:var(--accent)">${l.method}</td>
-            <td class="log-url" title="${l.url}">${l.url}</td>
-            <td class="log-status"><span class="chip chip-${sc}">${l.status}</span></td>
-            <td class="log-lat">${lat}</td>
-            <td class="log-size">${sz}</td>
+        const sz  = l.size_bytes > 0 ? (l.size_bytes < 1024 ? l.size_bytes + 'B' : (l.size_bytes/1024).toFixed(1) + 'KB') : '—';
+        const inst = {code:'A',desktop:'B',vscode:'C',web:'D'}[l.instance] || l.instance;
+        return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${l.timestamp}</td>
+            <td style="padding:7px 10px"><span class="badge badge-grey">${inst}</span></td>
+            <td style="padding:7px 10px;color:var(--accent);font-weight:600">${l.method}</td>
+            <td style="padding:7px 10px;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l.url}">${l.url}</td>
+            <td style="padding:7px 10px"><span class="badge badge-${sc}">${l.status}</span></td>
+            <td style="padding:7px 10px;text-align:right;color:var(--muted)">${lat}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--muted)">${sz}</td>
         </tr>`;
     }).join('');
 }
 
-function clearLogs() {
-    logs = [];
-    renderLogs();
-}
-
-function formatBytes(b) {
-    if (b < 1024) return b + 'B';
-    if (b < 1024*1024) return (b/1024).toFixed(1) + 'KB';
-    return (b/1024/1024).toFixed(1) + 'MB';
-}
+function clearLogs() { logs = []; renderLogs(); }
 
 // ── WebSocket ──────────────────────────────────────────────
 let ws = null;
+let reconnectTimer = null;
 
 function connectWS() {
     ws = new WebSocket('ws://127.0.0.1:8080/ws');
-    ws.onopen = () => { setWS(true); poll(); };
+
+    ws.onopen = () => {
+        setWSDot(true);
+        clearTimeout(reconnectTimer);
+        poll(); // 立即拉一次完整状态
+    };
+
     ws.onmessage = ({ data }) => {
         try {
             const msg = JSON.parse(data);
             if (msg.type === 'status_update') applyStatus(msg.data);
-            if (msg.type === 'log_entry')     addLog(msg.data);
         } catch {}
     };
-    ws.onclose = () => { setWS(false); setTimeout(connectWS, 5000); };
+
+    ws.onclose = () => {
+        setWSDot(false);
+        reconnectTimer = setTimeout(connectWS, 5000);
+    };
+
     ws.onerror = () => ws.close();
 }
 
-function setWS(ok) {
-    document.getElementById('ws-dot').className = 'ws-dot' + (ok ? ' ok' : '');
+function setWSDot(ok) {
+    document.getElementById('ws-dot').className  = 'ws-dot' + (ok ? ' connected' : '');
     document.getElementById('ws-label').textContent = ok ? '已连接' : '未连接';
 }
 
@@ -750,154 +676,263 @@ function setWS(ok) {
 async function poll() {
     try {
         const r = await fetch('/api/status');
-        if (r.ok) applyStatus(await r.json());
-    } catch {}
-
-    // 轮询日志
-    try {
-        const r = await fetch('/api/logs');
-        if (r.ok) {
-            const d = await r.json();
-            if (d.logs && d.logs.length > logs.length) {
-                // 增量添加
-                const newEntries = d.logs.slice(0, d.logs.length - logs.length);
-                newEntries.reverse().forEach(addLog);
-            }
-        }
+        if (!r.ok) return;
+        const d = await r.json();
+        applyStatus(d);
     } catch {}
 }
-setInterval(poll, 10000);
 
-// ── 渲染状态 ──────────────────────────────────────────────
+setInterval(poll, 30000);
+
+// ── 状态渲染 ───────────────────────────────────────────────
 function applyStatus(d) {
-    if (d.proxy)     renderProxy(d.proxy);
-    if (d.instances) d.instances.forEach(renderInst);
-    if (d.firewall)  renderFW(d.firewall);
+    if (d.proxy) renderProxy(d.proxy);
+    if (d.instances) d.instances.forEach(renderInstance);
+    if (d.firewall) renderFirewall(d.firewall);
 }
 
 function renderProxy(p) {
-    const el = document.getElementById('proxy-status');
+    const statusEl = document.getElementById('proxy-status');
     if (p.healthy) {
-        el.innerHTML = chip('pass', '正常');
+        statusEl.innerHTML = badge('pass', '正常');
         hideBanner();
     } else {
-        el.innerHTML = chip('fail', '故障');
-        showBanner('⚠ 代理连接故障，请检查代理配置或运行代理测试');
+        statusEl.innerHTML = badge('fail', '故障');
+        showBanner('⚠ 代理连接故障，实例已被保护（软隔离模式）');
     }
-    document.getElementById('proxy-ip').textContent      = p.exit_ip || '—';
-    document.getElementById('proxy-latency').textContent = p.latency_ms != null ? p.latency_ms + ' ms' : '—';
-    document.getElementById('proxy-geo').textContent     = p.geo
-        ? (p.geo.country + (p.geo.city ? ' · ' + p.geo.city : '')) : '—';
+    document.getElementById('proxy-ip').textContent =
+        p.exit_ip || '—';
+    document.getElementById('proxy-geo').textContent =
+        p.geo ? (p.geo.country + (p.geo.city ? ' · ' + p.geo.city : '')) : '—';
+    document.getElementById('proxy-latency').textContent =
+        p.latency_ms != null ? p.latency_ms + ' ms' : '—';
 }
 
-function renderInst(inst) {
+function renderInstance(inst) {
     const id = inst.kind;
+
+    // status
     const statusEl = document.getElementById(id + '-status');
     if (statusEl) {
+        const cls = { running: 'running', stopped: 'stopped', frozen: 'frozen' }[inst.status] || 'grey';
         const lbl = { running: '运行中', stopped: '已停止', frozen: '已冻结' }[inst.status] || inst.status;
-        const cls = { running: 'running', stopped: 'stopped', frozen: 'warn' }[inst.status] || 'grey';
-        statusEl.innerHTML = chip(cls, lbl);
+        statusEl.innerHTML = badge(cls, lbl);
     }
+
+    // validation
     const valEl = document.getElementById(id + '-validation');
     if (valEl) {
-        const cls = { pass:'pass', fail:'fail', unknown:'grey', unsupported:'grey' }[inst.validation] || 'grey';
-        valEl.innerHTML = chip(cls, inst.validation.toUpperCase());
+        const cls = {
+            pass: 'pass', fail: 'fail', unknown: 'grey', unsupported: 'grey'
+        }[inst.validation] || 'grey';
+        valEl.innerHTML = badge(cls, inst.validation.toUpperCase());
     }
+
+    // button states
     const isRunning = inst.status === 'running';
-    const lBtn = document.getElementById(id + '-launch');
-    const sBtn = document.getElementById(id + '-stop');
-    if (lBtn) lBtn.disabled = isRunning;
-    if (sBtn) sBtn.disabled = !isRunning;
+    const launchBtn = document.getElementById(id + '-launch-btn');
+    const stopBtn   = document.getElementById(id + '-stop-btn');
+    if (launchBtn) launchBtn.disabled = isRunning;
+    if (stopBtn)   stopBtn.disabled   = !isRunning;
 }
 
-function renderFW(fw) {
+function renderFirewall(fw) {
     const el = document.getElementById('firewall-status');
-    if (el) el.innerHTML = fw.installed ? chip('pass', 'PF 已安装') : chip('warn', '软隔离模式');
+    if (!el) return;
+    el.innerHTML = fw.installed
+        ? badge('pass', 'PF 规则已安装')
+        : badge('warn', '软隔离模式');
 }
 
-// ── 实例操作 ──────────────────────────────────────────────
+// ── 实例操作 ───────────────────────────────────────────────
 async function launch(kind) {
-    const btn = document.getElementById(kind + '-launch');
-    btn.disabled = true; btn.textContent = '启动中…';
+    const btn = document.getElementById(kind + '-launch-btn');
+    btn.disabled = true;
+    btn.textContent = '启动中…';
     try {
-        const r = await fetch('/api/instances/' + kind + '/launch', { method: 'POST' });
+        const r = await fetch(`/api/instances/${kind}/launch`, { method: 'POST' });
         const d = await r.json();
         if (!d.success) showBanner('启动失败：' + d.message);
-    } catch (e) { showBanner('请求失败：' + e.message); }
-    finally { btn.textContent = '启动'; await poll(); }
+    } catch (e) {
+        showBanner('请求失败：' + e.message);
+    } finally {
+        btn.textContent = '启动';
+        await poll();
+    }
 }
 
 async function stop(kind) {
-    const btn = document.getElementById(kind + '-stop');
-    btn.disabled = true; btn.textContent = '停止中…';
+    const btn = document.getElementById(kind + '-stop-btn');
+    btn.disabled = true;
+    btn.textContent = '停止中…';
     try {
-        const r = await fetch('/api/instances/' + kind + '/stop', { method: 'POST' });
+        const r = await fetch(`/api/instances/${kind}/stop`, { method: 'POST' });
         const d = await r.json();
         if (!d.success) showBanner('停止失败：' + d.message);
-    } catch (e) { showBanner('请求失败：' + e.message); }
-    finally { btn.textContent = '停止'; await poll(); }
+    } catch (e) {
+        showBanner('请求失败：' + e.message);
+    } finally {
+        btn.textContent = '停止';
+        await poll();
+    }
 }
 
 async function testProxy() {
     const btn = event.target;
-    btn.disabled = true; btn.textContent = '检测中…';
+    btn.disabled = true;
+    btn.textContent = '检测中…';
     try {
         const r = await fetch('/api/proxy/test', { method: 'POST',
-            headers: {'Content-Type':'application/json'}, body: '{}' });
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({}) });
         const d = await r.json();
-        if (d.healthy) {
-            renderProxy({ healthy: true, exit_ip: d.exit_ip, latency_ms: d.latency_ms, geo: d.geo });
-        } else {
-            renderProxy({ healthy: false, exit_ip: null, latency_ms: null, geo: null });
-            showBanner('代理测试失败：' + (d.error || '未知错误') + (d.detail ? ' — ' + d.detail : ''));
+        renderProxy(d);
+    } catch (e) {
+        showBanner('代理测试失败：' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '测试连接';
+    }
+}
+
+function showProxyConfig() {}  // 废弃
+
+// ── 代理配置弹窗 ──────────────────────────────────────────
+async function openProxyModal() {
+    const modal = document.getElementById('proxy-modal');
+    modal.style.display = 'flex';
+    document.getElementById('cfg-msg').textContent = '';
+
+    // 加载现有配置
+    try {
+        const r = await fetch('/api/proxy');
+        if (r.ok) {
+            const d = await r.json();
+            if (d.proto)    document.getElementById('cfg-proto').value    = d.proto;
+            if (d.host)     document.getElementById('cfg-host').value     = d.host;
+            if (d.port)     document.getElementById('cfg-port').value     = d.port;
+            if (d.username) document.getElementById('cfg-username').value = d.username;
         }
-    } catch (e) { showBanner('请求失败：' + e.message); }
-    finally { btn.disabled = false; btn.textContent = '测试连接'; }
+    } catch {}
+    updatePreview();
 }
 
-function showProxyConfig() {
-    alert('配置代理请编辑 ~/.cim/config.toml，修改后重启服务：\nlaunchctl unload/load ~/Library/LaunchAgents/com.cim.daemon.plist');
+function closeProxyModal() {
+    document.getElementById('proxy-modal').style.display = 'none';
+    document.getElementById('cfg-password').value = '';
 }
 
-// ── Banner ──────────────────────────────────────────────
-function showBanner(msg) {
-    const b = document.getElementById('banner');
-    b.textContent = msg; b.classList.add('show');
-    setTimeout(hideBanner, 8000);
-}
-function hideBanner() { document.getElementById('banner').classList.remove('show'); }
+// ESC 关闭
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProxyModal(); });
 
-// ── 工具 ────────────────────────────────────────────────
-function chip(cls, text) {
-    return `<span class="chip chip-${cls}">${text}</span>`;
+function updatePreview() {
+    const proto = document.getElementById('cfg-proto')?.value || 'socks5';
+    const host  = document.getElementById('cfg-host')?.value  || 'host';
+    const port  = document.getElementById('cfg-port')?.value  || 'port';
+    const user  = document.getElementById('cfg-username')?.value;
+    const pass  = document.getElementById('cfg-password')?.value;
+    let preview = proto + '://';
+    if (user) {
+        preview += user;
+        if (pass) preview += ':' + '•'.repeat(Math.min(pass.length, 8));
+        preview += '@';
+    }
+    preview += host + ':' + port;
+    document.getElementById('cfg-preview').textContent = preview;
 }
 
-function copyBlock(id, btn) {
-    const el = document.getElementById(id);
-    // 获取文本，去掉复制按钮自身的文字
-    const text = el.childNodes[0].textContent.trim();
+async function saveProxyConfig() {
+    const proto    = document.getElementById('cfg-proto').value;
+    const host     = document.getElementById('cfg-host').value.trim();
+    const port     = parseInt(document.getElementById('cfg-port').value);
+    const username = document.getElementById('cfg-username').value.trim();
+    const password = document.getElementById('cfg-password').value;
+    const msgEl    = document.getElementById('cfg-msg');
+
+    if (!host) { msgEl.style.color = 'var(--fail)'; msgEl.textContent = '请填写代理地址'; return; }
+    if (!port || port < 1 || port > 65535) { msgEl.style.color = 'var(--fail)'; msgEl.textContent = '端口范围 1–65535'; return; }
+
+    msgEl.style.color = 'var(--muted)';
+    msgEl.textContent = '保存中…';
+
+    try {
+        const r = await fetch('/api/proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proto, host, port, username: username || null, password: password || null }),
+        });
+        const d = await r.json();
+        if (d.success) {
+            msgEl.style.color = 'var(--pass)';
+            msgEl.textContent = '✓ 已保存，重启后生效';
+            document.getElementById('cfg-password').value = '';
+            setTimeout(closeProxyModal, 1500);
+        } else {
+            msgEl.style.color = 'var(--fail)';
+            msgEl.textContent = d.message || '保存失败';
+        }
+    } catch (e) {
+        msgEl.style.color = 'var(--fail)';
+        msgEl.textContent = '请求失败：' + e.message;
+    }
+}
+
+function togglePwd() {
+    const inp = document.getElementById('cfg-password');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// ── 复制代码 ───────────────────────────────────────────────
+function copyCode(id) {
+    const text = document.getElementById(id).textContent;
+    const btn = event.target;
     navigator.clipboard.writeText(text).then(() => {
-        btn.textContent = '已复制 ✓'; btn.classList.add('ok');
-        setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('ok'); }, 2000);
+        btn.textContent = '已复制 ✓';
+        btn.classList.add('copied');
+        setTimeout(() => {
+            btn.textContent = '复制';
+            btn.classList.remove('copied');
+        }, 2000);
     }).catch(() => {
+        // 降级：选中文本
+        const el = document.getElementById(id);
         const range = document.createRange();
         range.selectNodeContents(el);
         window.getSelection().removeAllRanges();
         window.getSelection().addRange(range);
+        btn.textContent = '已选中';
+        setTimeout(() => { btn.textContent = '复制'; }, 2000);
     });
 }
 
-// ── 主题切换 ─────────────────────────────────────────────
+// ── Banner ─────────────────────────────────────────────────
+function showBanner(msg) {
+    const el = document.getElementById('banner');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(hideBanner, 8000);
+}
+function hideBanner() {
+    document.getElementById('banner').classList.remove('show');
+}
+
+// ── 主题切换 ───────────────────────────────────────────────
 function toggleTheme() {
     const root = document.documentElement;
-    const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    const cur  = root.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', next);
     try { localStorage.setItem('cim-theme', next); } catch {}
 }
 try {
-    const t = localStorage.getItem('cim-theme');
-    if (t) document.documentElement.setAttribute('data-theme', t);
+    const saved = localStorage.getItem('cim-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
 } catch {}
+
+// ── 工具 ──────────────────────────────────────────────────
+function badge(cls, text) {
+    return `<span class="badge badge-${cls}">${text}</span>`;
+}
 
 // ── 启动 ──────────────────────────────────────────────────
 connectWS();
