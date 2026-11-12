@@ -141,7 +141,8 @@
    - 实测杀掉 daemon 管理的 sing-box 后，`/api/status` 在约 2 秒内变为
      `proxy.healthy=false`、`firewall.mode=blocked`；带 `cimgrp` 的真实公网直连超时。
    - 调用 `/api/proxy/restart` 后，出口 IP/GeoIP 恢复，`firewall.mode=allowed`，同一组直连恢复。
-   - 当前 daemon 在已认证的前台会话中运行；launchd 长期运行所需的精确 sudoers 授权仍待单独审批。
+   - 已安装 `/etc/sudoers.d/cim_pf` 的 4 条精确授权，并由 `gui/501/com.cim.daemon`
+     launchd 服务在清掉 sudo 缓存后完成了阻断/恢复演练。
 
 2. **VS Code 环境复测**
    - 安装或提供 VS Code `code` 命令后，验证 `--locale`、TZ/LANG/LC_ALL 和 lsof。

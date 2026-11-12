@@ -55,9 +55,10 @@ sudo pfctl -f /etc/pf.conf
 sudo pfctl -e  # 如果 PF 未启用
 ```
 
-### 6. 配置 sudoers (可选)
+### 6. 配置 sudoers（launchd 必需）
 
-允许守护进程无密码切换 PF 规则：
+launchd 没有交互式终端；要让健康检查在登录会话外也能切换 PF，写入
+`/etc/sudoers.d/cim_pf`（文件名不要带点号，macOS 的 `#includedir` 会忽略带点号文件）：
 
 ```bash
 sudo visudo
@@ -65,9 +66,15 @@ sudo visudo
 
 添加以下行（替换 `youzhisan` 为你的用户名）：
 
+```sudoers
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -F rules
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -s rules
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -nf /etc/pf.anchors/com.cim.block
 ```
-youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim *
-```
+
+写入后用 `sudo visudo -cf /etc/sudoers` 校验，并用
+`sudo -n pfctl -a com.cim -s rules` 确认无交互认证即可执行。
 
 ## 验证安装
 
