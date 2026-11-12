@@ -416,10 +416,15 @@ impl ProxyManager {
             .unwrap_or(0);
         let upstream_user = extract_toml_val(&toml_content, "username").unwrap_or_default();
 
-        // 从 Keychain 读取密码
-        let upstream_pass = get_keychain_password("com.cim.proxy", &upstream_host)
-            .or_else(|| get_existing_upstream_password(&self.config.config_path, &upstream_host))
-            .unwrap_or_default();
+        // Prefer the already generated 0600 sing-box config. Reading Keychain
+        // through `/usr/bin/security` can trigger a macOS authorization prompt
+        // on every launchd restart when the binary is rebuilt or unsigned. The
+        // config is written with 0600 permissions below, so Keychain is only
+        // needed for the first migration or when the config has no password.
+        let upstream_pass =
+            get_existing_upstream_password(&self.config.config_path, &upstream_host)
+                .or_else(|| get_keychain_password("com.cim.proxy", &upstream_host))
+                .unwrap_or_default();
 
         // 决定出站类型
         let outbound = if !upstream_host.is_empty() && upstream_port > 0 {

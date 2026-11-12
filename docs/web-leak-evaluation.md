@@ -40,6 +40,14 @@ tail -f ~/.cim/logs/daemon.log
 
 真实集成脚本 `CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=web tests/real_proxy_integration.sh` 现在会额外断言：验证时间存在、`direct=0`、代理连接数大于 0、WebRTC/QUIC 约束参数存在、无 UDP 53，并且历史验证证据为 `pass`。
 
+2026-11-12 最终验收补充结果：
+
+- WebRTC：通过 CDP 在真实 Web 实例中创建 ICE offer，只有两个本地 mDNS `host` 候选，没有 `srflx`/`relay` 公网候选；`publicCandidate=false`。
+- IPv6-only：访问 `https://ipv6.icanhazip.com/` 返回 `ERR_CONNECTION_RESET`，未建立 IPv6-only 页面连接。该结果证明本次没有绕过代理形成 IPv6 直连，但也说明当前上游链路不能把 IPv6-only 目标作为可用路径，不能标记为“IPv6 访问通过”。
+- 代理断开：停止 sing-box 后 `/api/status` 进入 `proxy healthy=false`、`firewall.mode=blocked`；通过实例隔离 helper 对 `1.1.1.1:443` 的无代理访问在 1 秒后超时（curl exit 28）。
+- 代理恢复：调用 `/api/proxy/restart` 后自动回到 `proxy healthy=true`、`firewall.mode=allowed`；出口为 `48.44.59.210`，GeoIP 为 US/New York/`America/New_York`，`/api/validation/web` 恢复为 `pass` 且 `direct=0`。
+- 代理测试接口恢复后返回 `healthy=true`，本次测得延迟约 2944 ms；该延迟偏高，应作为上游代理质量问题单独跟踪。
+
 ## 证据边界
 
-这是进程树的采样窗口，不是对主机所有应用的全局抓包保证。Web 以外的应用、浏览器崩溃后脱离用户数据目录的孤儿进程，以及尚未执行的 tcpdump/WebRTC 页面脚本测试需要单独评估。最终验收应在首次导航、刷新、新标签页、iframe/Service Worker、WebRTC、IPv6-only 和代理断开/恢复场景各取一次证据。
+这是进程树的采样窗口，不是对主机所有应用的全局抓包保证。Web 以外的应用、浏览器崩溃后脱离用户数据目录的孤儿进程，以及未取得 root 抓包权限时的系统级 UDP/DNS 证据需要单独评估。本次 tcpdump 未能执行：非 root 抓包被 macOS 拒绝，`sudo -n tcpdump` 需要交互式密码；没有在聊天中索取或记录密码。要补齐包级证据，需要用户在本机授权一次抓包命令后重跑。首次导航、刷新、新标签页、WebRTC、IPv6-only 和代理断开/恢复均已取得本次验收样本。

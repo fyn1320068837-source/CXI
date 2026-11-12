@@ -78,7 +78,7 @@ tail -f ~/.cim/logs/daemon.log | grep "auth\|fail\|closed"
 
 ---
 
-### AT-04：DNS 泄漏 ✅
+### AT-04：DNS 泄漏 ⚠️（进程级通过，包级待 root 抓包）
 
 **目标**：无明文 DNS 查询从实例进程发出
 
@@ -91,11 +91,11 @@ cat ~/.cim/sing-box/config.json | grep -A3 '"dns"'
 
 **预期**：`strategy: "ipv4_only"`，DNS 服务器通过 upstream 出站
 
-**实测**：✅ 配置正确
+**实测**：配置、进程级 lsof 和 Web 验证均未发现 Web 进程 UDP 53；本机 tcpdump 需要 root 抓包权限，本轮未取得非交互 sudo 授权，因此不能宣称完成系统级包证据。
 
 ---
 
-### AT-05：IPv6 绕行 ✅
+### AT-05：IPv6 绕行 ⚠️（无直连，但 IPv6-only 访问受限）
 
 **目标**：IPv6 连接不直连
 
@@ -108,7 +108,15 @@ ps aux | grep "Chrome.*web" | grep -o '\-\-proxy-server=[^ ]*'
 
 **预期**：`--proxy-server=socks5://127.0.0.1:7891` + DoH 策略禁用 IPv6
 
-**实测**：✅ 参数正确
+**实测**：WebRTC/Chrome 参数和 sing-box `ipv4_only` 配置正确；真实访问 `https://ipv6.icanhazip.com/` 返回 `ERR_CONNECTION_RESET`，未建立 IPv6-only 连接。该结果证明本次未出现 IPv6 直连泄漏，但当前上游代理不能提供可用的 IPv6-only 访问。
+
+### AT-13：WebRTC 非代理 UDP ✅
+
+**实测**：通过 CDP 创建 ICE offer，只产生本地 mDNS `host` 候选，没有 `srflx`/`relay` 公网候选。
+
+### AT-14：PF fail-closed 断开/恢复 ✅
+
+**实测**：停止 sing-box 后 `/api/status` 进入 `proxy healthy=false`、`firewall.mode=blocked`；实例隔离 helper 的无代理 `1.1.1.1:443` 请求超时（curl 28）。调用 `/api/proxy/restart` 后自动恢复 `healthy=true`、`firewall.mode=allowed`，Web 验证为 `direct=0`。
 
 ---
 
@@ -268,8 +276,8 @@ $ sqlite3 ~/.cim/cim.db "SELECT id, kind, status FROM instance_state ORDER BY id
 | AT-01 四实例共享出口 | 自动 | ✅ |
 | AT-02 代理被杀 | 自动 | ✅ |
 | AT-03 认证失败 | 自动 | 🔄 需真实代理 |
-| AT-04 DNS 泄漏 | 自动 | ✅ |
-| AT-05 IPv6 绕行 | 自动 | ✅ |
+| AT-04 DNS 泄漏 | 自动 | ⚠️ 进程级通过，包级 tcpdump 待 root |
+| AT-05 IPv6 绕行 | 自动 | ⚠️ 无直连，但 IPv6-only 访问受限 |
 | AT-06 Wi-Fi 切换 | 手动 | ⬜ |
 | AT-07 睡眠唤醒 | 手动 | ⬜ |
 | AT-08 配置隔离 | 自动 | ✅ |
@@ -279,9 +287,10 @@ $ sqlite3 ~/.cim/cim.db "SELECT id, kind, status FROM instance_state ORDER BY id
 | AT-12 凭据零接触 | 代码审查 | ✅ |
 | Storage 集成 | 自动 | ✅ |
 | API 集成 | 自动 | ✅（8/8 通过）|
+| AT-13 WebRTC 非代理 UDP | 真实 CDP | ✅ |
+| AT-14 PF fail-closed 断开/恢复 | 真实代理 | ✅ |
 
-**发布条件**：AT-01~05, 08~12 全通过 ✅ → 可发布 1.0.0
-AT-06/07 手动验证后补充记录。
+**发布条件**：AT-01~02、AT-08~14 已完成；AT-03 认证失败场景尚未单独执行，AT-04 仍缺 root tcpdump 包级证据，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
 
 ---
 

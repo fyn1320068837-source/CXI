@@ -152,6 +152,8 @@ security find-generic-password -s com.cim.proxy
 security find-generic-password -s com.cim.proxy -w
 ```
 
+守护进程启动时优先复用 `~/.cim/sing-box/config.json` 中权限为 0600 的密码，只有首次迁移或该配置缺少密码时才查询 Keychain。这样 launchd 重启和普通 release 更新不会重复触发 macOS 授权弹窗；需要更新代码时使用 `./scripts/restart-daemon.sh`，不要反复执行安装脚本。
+
 ### 网络调试
 
 ```bash

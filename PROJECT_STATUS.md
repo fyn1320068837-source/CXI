@@ -2,8 +2,8 @@
 
 **项目**: Claude Instance Manager (CIM)  
 **版本**: v1.0.0-dev  
-**日期**: 2026-11-11  
-**当前阶段**: 真实代理联调完成，进入故障保护与交付收尾
+**日期**: 2026-11-12
+**当前阶段**: 真实代理联调与故障保护验收完成，包级抓包权限待补
 
 ---
 
@@ -15,10 +15,10 @@
 ✅ M1 骨架    [████████] 100%  (2天) - 提前1天完成
 ✅ M2 网关    [████████] 100%  (2天) - 真实 SOCKS5 已联调
 ✅ M3 实例    [████████] 100%  (3天) - Code/Web 已验证
-🟡 M4 验证    [██████  ]  75%  (3天) - lsof 已接入，PF 需主机安装
+🟡 M4 验证    [███████ ]  90%  (3天) - lsof/PF 已接入，包级抓包待权限
 ⬜ M5 B实例   [        ]   0%  (2天)
-🟡 M6 测试    [████    ]  50%  (3天) - 单测及真实代理脚本已加入
-🟡 M7 交付    [██      ]  25%  (2天) - 文档与最终提交待收尾
+🟡 M6 测试    [██████  ]  75%  (3天) - 真实代理、WebRTC、断开恢复已实测
+🟡 M7 交付    [███     ]  40%  (2天) - 最终验收记录待提交
 
 总进度: 15/21 天 (71%)
 预计完成: 2026-11-12（取决于 PF 主机权限与 VS Code 安装）
@@ -81,6 +81,10 @@
 - Web Chrome 网络子进程的 lsof 样本显示外部 TCP 连接均到 `127.0.0.1:7891`，本地 mDNS UDP 保持本地分类。
 - Web 全面泄漏评估已补强：Chrome 禁用 QUIC 和非代理 WebRTC UDP；sing-box 生成 `ipv4_only` DoH 并经 `upstream` 出站；`/api/status` 现在返回验证时间和连接证据，`/api/validation/web` 返回最近历史，SQLite 每实例保留最多 500 条证据。
 - 2026-11-12 真实 Web 复测：`checked 11 pids; proxied=14, local=18, direct=0`，递归 lsof 未发现 UDP 53，公网连接未出现在 Web 进程树；生成的 sing-box 配置通过 `sing-box check`，真实代理脚本新增 WebRTC/QUIC、DNS UDP 和历史证据断言。
+- 2026-11-12 最终验收：CDP WebRTC ICE 仅产生本地 mDNS host 候选，无公网 `srflx/relay` 候选；IPv6-only 站点返回 `ERR_CONNECTION_RESET`，未形成 IPv6 直连但当前上游不支持该访问路径。
+- 2026-11-12 代理断开恢复：停止 sing-box 后状态进入 `proxy healthy=false`、`firewall.mode=blocked`，实例 helper 的无代理 `1.1.1.1:443` 请求以 curl 28 超时；重启代理后自动恢复 `healthy=true`、`firewall.mode=allowed`，Web 验证保持 `direct=0`。
+- 包级 tcpdump 尚未完成：本机非 root 抓包被 macOS 拒绝，`sudo -n` 需要交互式密码；进程级 lsof、PF fail-closed 和 WebRTC 已完成，需用户本地授权一次 root 抓包后补齐最后一项。
+- 钥匙串授权已简化：守护进程现在优先读取权限为 0600 的现有 sing-box 配置，只有首次迁移或配置缺密码时才调用 `security`；普通 launchd 重启和 release 更新不再重复触发 `com.cim.proxy` 弹窗。
 
 ---
 

@@ -119,12 +119,16 @@ WS   /ws                                实时状态推送
 ## 安全特性
 
 - **密码长期存储**：SOCKS5 密码优先写入 macOS Keychain
-- **运行配置权限**：sing-box 运行配置含密码时为 0600；Keychain 查询受超时保护，已有配置仅作迁移回退
+- **运行配置权限**：sing-box 运行配置含密码时为 0600；守护进程优先读取这份本地配置，只有首次迁移或配置缺少密码时才访问 Keychain，避免每次 launchd 重启重复弹窗
 - **日志脱敏**：IP 保留前两段，密码全遮蔽
 - **Claude 凭据零接触**：代码禁止打开任何实例的 Cookies / credentials 路径
 - **HTTP 仅本地**：API 只绑 `127.0.0.1`，不对外暴露
 
 Web 出口泄漏的判定方法、现场命令和证据边界见 [`docs/web-leak-evaluation.md`](docs/web-leak-evaluation.md)。请求 URL 日志只说明访问目标，是否经过代理以 `/api/status` 的进程级 lsof 证据为准。
+
+### macOS 钥匙串授权
+
+首次保存代理密码时，macOS 可能要求授权 `com.cim.proxy`。选择“始终允许”可以记住这次授权；后续守护进程会优先读取权限为 0600 的 `~/.cim/sing-box/config.json`，不再因 launchd 重启或普通代码更新重复访问钥匙串。更新代码使用 `./scripts/restart-daemon.sh`，不需要重复运行 `install.sh`。
 
 ## 出口 IP 默认环境
 
