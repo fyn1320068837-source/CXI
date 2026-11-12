@@ -176,7 +176,8 @@ impl FirewallController {
             .map(|output| output.status.success())
             .unwrap_or(false);
         if !group_exists {
-            let group = run_privileged(&["dscl", ".", "-create", &group_path])?;
+            let group =
+                run_privileged(&["dseditgroup", "-o", "create", &self.config.isolation_group])?;
             if !group.status.success() {
                 return Err(anyhow::anyhow!(format_command_error(
                     "create CIM isolation group",

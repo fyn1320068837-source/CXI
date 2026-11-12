@@ -21,13 +21,13 @@ cim install-firewall
 ~~~
 
 该命令会创建 cimgrp（或配置中的 isolation_group）、写入
-/etc/pf.anchors/com.cim.block 并做语法检查。它需要可用的 sudo 权限。
+/etc/pf.anchors/com.cim.block 并做语法检查。它需要可用的 sudo 权限；
+主机级 `/etc/pf.conf` anchor 仍需管理员显式安装并重新加载。
 
 ### 2. 创建辅助组（手工安装时）
 
 ```bash
-sudo dscl . -create /Groups/cimgrp
-sudo dscl . -create /Groups/cimgrp PrimaryGroupID 999
+sudo dseditgroup -o create cimgrp
 sudo dscl . -create /Groups/cimgrp RealName "CIM Isolation Group"
 ```
 
@@ -95,9 +95,9 @@ sudo pfctl -a com.cim -s rules
 sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
 ```
 
-此规则集阻断 cimgrp 组成员的所有非本地 TCP/UDP 出站连接，只保留回环，
-因此实例无法在代理断开后直连。实例启动时会尝试使用 cimgrp 作为有效组；
-没有该组时状态会保持为软隔离模式。
+此规则集阻断有效 GID 为 cimgrp 的进程的所有非本地 TCP/UDP 出站连接，只保留回环，
+因此实例无法在代理断开后直连。当前 macOS 普通用户进程不能直接切换到新建 GID；
+生产环境需要特权启动器或等价的隔离启动方式，未具备时状态仍应视为软隔离。
 
 ### 恢复
 

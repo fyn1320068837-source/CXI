@@ -135,10 +135,13 @@
 
 ## 🎯 下一步计划
 
-1. **PF 主机安装与故障演练**
-   - 运行 `sudo cim install-firewall`，将 `com.cim.block` 加入 `/etc/pf.conf`。
-   - 让 `cimgrp` 组实例在代理断开时被 PF 阻断，恢复后由健康检查自动清空 anchor 规则。
-   - 在不改变系统默认路由的前提下做一次断线/恢复演练。
+1. **PF 主机安装与故障演练** ✅ 2026-11-11
+   - 当前主机已创建 `cimgrp`（GID 501），安装 `/etc/pf.anchors/com.cim.block`，并将
+     `com.cim` anchor 加入 `/etc/pf.conf`；PF 状态为 `Enabled`。
+   - 实测杀掉 daemon 管理的 sing-box 后，`/api/status` 在约 2 秒内变为
+     `proxy.healthy=false`、`firewall.mode=blocked`；带 `cimgrp` 的真实公网直连超时。
+   - 调用 `/api/proxy/restart` 后，出口 IP/GeoIP 恢复，`firewall.mode=allowed`，同一组直连恢复。
+   - 当前 daemon 在已认证的前台会话中运行；launchd 长期运行所需的精确 sudoers 授权仍待单独审批。
 
 2. **VS Code 环境复测**
    - 安装或提供 VS Code `code` 命令后，验证 `--locale`、TZ/LANG/LC_ALL 和 lsof。
@@ -198,7 +201,9 @@ tx.send(status_json)?;
 ## ⚠️ 已知问题
 
 ### 已知限制
-- PF 需要管理员权限和 `/etc/pf.conf` anchor；未安装时显示软隔离模式。
+- 其他主机仍需要管理员权限完成 `/etc/pf.conf` anchor 安装；未安装时显示软隔离模式。
+- macOS 普通用户进程不能直接把自身有效 GID 切到新建的 `cimgrp`；当前适配器的进程级组切换仍需
+  特权启动器方案，PF 规则本身已通过 `sudo -u <user> -g cimgrp` 实测。
 - Desktop 尚未进入 VM 或独立启动环境，保持 `UNSUPPORTED`。
 - 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测。
 - Claude 登录页的 Permissions-Policy 可能阻止脚本读取 geolocation；CDP 覆盖命令仍会发送。
