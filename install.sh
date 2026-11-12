@@ -61,6 +61,9 @@ echo "▸ 安装二进制..."
 sudo cp target/release/cim /usr/local/bin/cim
 sudo chmod +x /usr/local/bin/cim
 echo "  /usr/local/bin/cim ✓"
+sudo install -d -m 0755 /usr/local/libexec
+sudo install -m 0755 target/release/cim-instance-launch /usr/local/libexec/cim-instance-launch
+echo "  /usr/local/libexec/cim-instance-launch ✓"
 echo ""
 
 # ── 创建目录结构 ─────────────────────────

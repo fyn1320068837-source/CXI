@@ -29,7 +29,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # System integration
 security-framework = "2.11"  # macOS Keychain
 sysinfo = "0.31"
-nix = { version = "0.29", features = ["process", "signal"] }
+nix = { version = "0.29", features = ["process", "signal", "user"] }
 
 # Network & Proxy
 reqwest = { version = "0.12", features = ["json", "socks"] }

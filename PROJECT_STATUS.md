@@ -144,14 +144,20 @@
    - 已安装 `/etc/sudoers.d/cim_pf` 的 4 条精确授权，并由 `gui/501/com.cim.daemon`
      launchd 服务在清掉 sudo 缓存后完成了阻断/恢复演练。
 
-2. **VS Code 环境复测**
+2. **实例级 PF 启动器** ✅ 2026-11-11
+   - 安装 root-owned `/usr/local/libexec/cim-instance-launch`，启动前设置用户 supplementary
+     groups 和有效 GID，再降权执行实例程序。
+   - Web 已通过 helper 启动并完成 `proxied=25, direct=0`；代理断开时同一 helper 的公网直连超时，恢复后 PF 自动放行。
+   - Code CLI 与 VS Code CLI 当前未安装，保留为环境补测项。
+
+3. **VS Code 环境复测**
    - 安装或提供 VS Code `code` 命令后，验证 `--locale`、TZ/LANG/LC_ALL 和 lsof。
 
-3. **Desktop 隔离方案评估**
+4. **Desktop 隔离方案评估**
    - 比较 Tart/Colima VM、独立用户会话和 macOS App 沙盒。
    - 方案确定前，Desktop 继续在控制台标记为“不支持自动覆盖”。
 
-4. **交付**
+5. **交付**
    - 运行 `cargo check`、`cargo test --all`、真实代理脚本和 `git diff --check`。
    - 更新变更记录后创建最终 Git commit。
 
@@ -203,8 +209,8 @@ tx.send(status_json)?;
 
 ### 已知限制
 - 其他主机仍需要管理员权限完成 `/etc/pf.conf` anchor 安装；未安装时显示软隔离模式。
-- macOS 普通用户进程不能直接把自身有效 GID 切到新建的 `cimgrp`；当前适配器的进程级组切换仍需
-  特权启动器方案，PF 规则本身已通过 `sudo -u <user> -g cimgrp` 实测。
+- 实例进程现在通过 root-owned `cim-instance-launch` 降权到 `cimgrp` 后启动；daemon 和
+  sing-box 仍保持普通用户身份，PF 规则不再只停留在手工组进程验证层。
 - Desktop 尚未进入 VM 或独立启动环境，保持 `UNSUPPORTED`。
 - 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测。
 - Claude 登录页的 Permissions-Policy 可能阻止脚本读取 geolocation；CDP 覆盖命令仍会发送。

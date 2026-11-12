@@ -1,6 +1,6 @@
 // VS Code Claude extension adapter (Instance C)
 use super::{
-    apply_isolation_group, apply_locale_env, descendant_pids, CapabilityReport, InstanceAdapter,
+    apply_locale_env, descendant_pids, isolated_command, CapabilityReport, InstanceAdapter,
     ProcessHandle,
 };
 use crate::geoip::SharedGeoProfile;
@@ -57,7 +57,12 @@ impl InstanceAdapter for VsCodeAdapter {
         std::fs::create_dir_all(&self.extensions_dir)?;
 
         // Install Claude extension
-        Command::new("code")
+        let executable = self
+            .detect()
+            .await
+            .path
+            .ok_or_else(|| anyhow::anyhow!("code is not installed"))?;
+        Command::new(executable)
             .args([
                 "--install-extension",
                 "anthropic.claude-code",
@@ -71,7 +76,12 @@ impl InstanceAdapter for VsCodeAdapter {
 
     async fn launch(&self) -> Result<ProcessHandle> {
         let profile = self.geo_profile.read().await.clone();
-        let mut command = Command::new("code");
+        let executable = self
+            .detect()
+            .await
+            .path
+            .ok_or_else(|| anyhow::anyhow!("code is not installed"))?;
+        let mut command = isolated_command(executable);
         command.args([
             "--user-data-dir",
             &self.user_data_dir,
@@ -84,7 +94,6 @@ impl InstanceAdapter for VsCodeAdapter {
             command.arg("--locale").arg(language);
         }
         apply_locale_env(&mut command, &profile);
-        apply_isolation_group(&mut command);
         let child = command.spawn()?;
 
         Ok(ProcessHandle {

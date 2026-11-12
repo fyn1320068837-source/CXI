@@ -1,6 +1,6 @@
 // Claude Web in Chromium adapter (Instance D)
 use super::{
-    apply_isolation_group, apply_locale_env, descendant_pids, CapabilityReport, InstanceAdapter,
+    apply_locale_env, descendant_pids, isolated_command, CapabilityReport, InstanceAdapter,
     ProcessHandle,
 };
 use crate::geoip::{GeoProfile, SharedGeoProfile};
@@ -91,10 +91,9 @@ impl InstanceAdapter for WebAdapter {
         }
         args.push("https://claude.ai".to_string());
 
-        let mut command = Command::new(&browser_path);
+        let mut command = isolated_command(&browser_path);
         command.args(&args);
         apply_locale_env(&mut command, &profile);
-        apply_isolation_group(&mut command);
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {

@@ -1,6 +1,6 @@
 // Claude Code CLI adapter (Instance A)
 use super::{
-    apply_isolation_group, apply_locale_env, descendant_pids, CapabilityReport, InstanceAdapter,
+    apply_locale_env, descendant_pids, isolated_command, CapabilityReport, InstanceAdapter,
     ProcessHandle,
 };
 use crate::geoip::SharedGeoProfile;
@@ -32,7 +32,7 @@ impl InstanceAdapter for CodeAdapter {
             Ok(o) if o.status.success() => {
                 let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 // Try to get version
-                let version = Command::new("claude")
+                let version = Command::new(&path)
                     .arg("--version")
                     .output()
                     .ok()
@@ -62,7 +62,12 @@ impl InstanceAdapter for CodeAdapter {
     async fn launch(&self) -> Result<ProcessHandle> {
         // Launch claude with custom HOME and proxy env vars
         let profile = self.geo_profile.read().await.clone();
-        let mut command = Command::new("claude");
+        let executable = self
+            .detect()
+            .await
+            .path
+            .ok_or_else(|| anyhow::anyhow!("claude is not installed"))?;
+        let mut command = isolated_command(executable);
         command
             .env("HOME", &self.profile_dir)
             .env("HTTPS_PROXY", "http://127.0.0.1:7890")
@@ -70,7 +75,6 @@ impl InstanceAdapter for CodeAdapter {
             .env("ALL_PROXY", "socks5://127.0.0.1:7891")
             .env("NO_PROXY", "localhost,127.0.0.1");
         apply_locale_env(&mut command, &profile);
-        apply_isolation_group(&mut command);
         let child = command.spawn()?;
 
         Ok(ProcessHandle {

@@ -2,6 +2,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Command;
 
 use crate::geoip::GeoProfile;
@@ -56,30 +58,86 @@ pub fn apply_locale_env(command: &mut Command, profile: &GeoProfile) {
     }
 }
 
-/// Return the effective gid for the optional PF isolation group. Instances
-/// keep the normal user id but use this group so PF can block them without
-/// blocking the sing-box process that owns the upstream connection.
+const INSTANCE_LAUNCHER: &str = "/usr/local/libexec/cim-instance-launch";
+
+/// Return the numeric GID for the optional PF isolation group.
 pub fn isolation_group_gid() -> Option<u32> {
     let group = std::env::var("CIM_ISOLATION_GROUP").unwrap_or_else(|_| "cimgrp".to_string());
-    Command::new("id")
-        .args(["-g", &group])
+    #[cfg(target_os = "macos")]
+    {
+        let group_path = format!("/Groups/{group}");
+        Command::new("dscl")
+            .args([".", "-read", &group_path, "PrimaryGroupID"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| parse_primary_group_id(&output.stdout))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new("getent")
+            .args(["group", &group])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| {
+                String::from_utf8(output.stdout)
+                    .ok()?
+                    .split(':')
+                    .nth(2)
+                    .and_then(|value| value.trim().parse().ok())
+            })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_primary_group_id(output: &[u8]) -> Option<u32> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .find_map(|line| line.strip_prefix("PrimaryGroupID:")?.trim().parse().ok())
+}
+
+/// Build a command that starts an instance with the PF isolation GID.
+///
+/// The daemon remains a normal user process. When the helper and group are
+/// installed, sudo runs only the root-owned launcher, which immediately
+/// restores the requesting user's UID and supplementary groups before exec.
+pub fn isolated_command(program: impl AsRef<OsStr>) -> Command {
+    let Some(gid) = isolation_group_gid() else {
+        return Command::new(program);
+    };
+    if !Path::new(INSTANCE_LAUNCHER).is_file() {
+        return Command::new(program);
+    }
+
+    let uid = Command::new("id")
+        .arg("-u")
         .output()
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|value| value.trim().parse().ok())
-}
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let user = std::env::var("USER").ok().filter(|value| !value.is_empty());
+    let (Some(uid), Some(user)) = (uid, user) else {
+        return Command::new(program);
+    };
 
-#[cfg(unix)]
-pub fn apply_isolation_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    if let Some(gid) = isolation_group_gid() {
-        command.gid(gid);
-    }
+    let mut command = Command::new("/usr/bin/sudo");
+    command.args([
+        "-n",
+        "-E",
+        INSTANCE_LAUNCHER,
+        "--uid",
+        &uid.to_string(),
+        "--gid",
+        &gid.to_string(),
+        "--user",
+        &user,
+        "--",
+    ]);
+    command.arg(program);
+    command
 }
-
-#[cfg(not(unix))]
-pub fn apply_isolation_group(_command: &mut Command) {}
 
 /// Enumerate a process and all descendants using the portable macOS pgrep
 /// parent query. Failed/vanished children are ignored because the verifier

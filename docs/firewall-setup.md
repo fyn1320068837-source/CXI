@@ -71,10 +71,14 @@ youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -f /etc/pf.anchors/com.cim
 youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -F rules
 youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -s rules
 youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -nf /etc/pf.anchors/com.cim.block
+youzhisan ALL=(root) SETENV: NOPASSWD: /usr/local/libexec/cim-instance-launch *
 ```
 
 写入后用 `sudo visudo -cf /etc/sudoers` 校验，并用
 `sudo -n pfctl -a com.cim -s rules` 确认无交互认证即可执行。
+`install.sh` 会把 root-owned 的 `cim-instance-launch` 安装到
+`/usr/local/libexec`；该 helper 只在 exec 前设置目标用户的 UID/GID 和
+supplementary groups，实例进程本身不会以 root 身份运行。
 
 ## 验证安装
 
@@ -103,8 +107,9 @@ sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
 ```
 
 此规则集阻断有效 GID 为 cimgrp 的进程的所有非本地 TCP/UDP 出站连接，只保留回环，
-因此实例无法在代理断开后直连。当前 macOS 普通用户进程不能直接切换到新建 GID；
-生产环境需要特权启动器或等价的隔离启动方式，未具备时状态仍应视为软隔离。
+因此实例无法在代理断开后直连。CIM 通过 root-owned `cim-instance-launch`
+先初始化用户组，再降权到实例用户和 cimgrp 后 exec；sing-box 和 daemon 继续以普通用户
+运行，不会被该组规则拦截。
 
 ### 恢复
 

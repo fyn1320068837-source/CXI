@@ -40,6 +40,8 @@ echo ""
 echo "── 实例管理 ──────────────────────────"
 run_test "API 状态端点"               tests/test_m4_api.sh
 run_test "实例目录隔离"               tests/test_instances.sh
+run_test "PF 实例启动器"               tests/test_instance_launcher.sh
+run_test "PF/launchd 自动切换配置"      tests/test_pf_launchd.sh
 run_test "网络验证器 (lsof)"          tests/test_verifier.sh
 
 echo ""
