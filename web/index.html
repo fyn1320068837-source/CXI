@@ -130,6 +130,8 @@
             padding: .15rem .5rem; border-radius: 3px; }
         .inst-row { display: flex; justify-content: space-between; font-size: .88rem;
             padding: .3rem 0; border-bottom: 1px solid var(--border); }
+        .validation-detail { max-width: 72%; color: var(--muted); font-family: 'SF Mono', 'Menlo', monospace;
+            font-size: .7rem; text-align: right; overflow-wrap: anywhere; }
         .inst-row:last-of-type { border-bottom: none; }
         .inst-actions { margin-top: .9rem; display: flex; gap: .5rem; }
 
@@ -394,6 +396,14 @@
                     <span>验证</span>
                     <span id="code-validation"><span class="badge badge-grey">UNKNOWN</span></span>
                 </div>
+                <div class="inst-row">
+                    <span>连接证据</span>
+                    <span class="validation-detail" id="code-validation-details">—</span>
+                </div>
+                <div class="inst-row">
+                    <span>最近检查</span>
+                    <span class="validation-detail" id="code-validation-checked-at">—</span>
+                </div>
                 <div class="inst-actions">
                     <button class="btn btn-primary"    id="code-launch-btn" onclick="launch('code')">启动</button>
                     <button class="btn btn-secondary"  id="code-stop-btn"   onclick="stop('code')">停止</button>
@@ -412,6 +422,14 @@
                 <div class="inst-row">
                     <span>验证</span>
                     <span id="desktop-validation"><span class="badge badge-grey">UNSUPPORTED</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>连接证据</span>
+                    <span class="validation-detail" id="desktop-validation-details">—</span>
+                </div>
+                <div class="inst-row">
+                    <span>最近检查</span>
+                    <span class="validation-detail" id="desktop-validation-checked-at">—</span>
                 </div>
                 <div class="inst-row" style="color: var(--muted); font-size:.8rem;">
                     <span colspan="2">软隔离模式，网络验证不可用</span>
@@ -435,6 +453,14 @@
                     <span>验证</span>
                     <span id="vscode-validation"><span class="badge badge-grey">UNKNOWN</span></span>
                 </div>
+                <div class="inst-row">
+                    <span>连接证据</span>
+                    <span class="validation-detail" id="vscode-validation-details">—</span>
+                </div>
+                <div class="inst-row">
+                    <span>最近检查</span>
+                    <span class="validation-detail" id="vscode-validation-checked-at">—</span>
+                </div>
                 <div class="inst-actions">
                     <button class="btn btn-primary"    id="vscode-launch-btn" onclick="launch('vscode')">启动</button>
                     <button class="btn btn-secondary"  id="vscode-stop-btn"   onclick="stop('vscode')">停止</button>
@@ -454,6 +480,14 @@
                     <span>验证</span>
                     <span id="web-validation"><span class="badge badge-grey">UNKNOWN</span></span>
                 </div>
+                <div class="inst-row">
+                    <span>连接证据</span>
+                    <span class="validation-detail" id="web-validation-details">—</span>
+                </div>
+                <div class="inst-row">
+                    <span>最近检查</span>
+                    <span class="validation-detail" id="web-validation-checked-at">—</span>
+                </div>
                 <div class="inst-actions">
                     <button class="btn btn-primary"    id="web-launch-btn" onclick="launch('web')">启动</button>
                     <button class="btn btn-secondary"  id="web-stop-btn"   onclick="stop('web')">停止</button>
@@ -472,7 +506,7 @@
                 <span id="firewall-status"><span class="badge badge-warn">软隔离模式</span></span>
             </div>
             <p class="firewall-note">
-                安装 PF 规则可提供内核级断线保护：<code>sudo cim install-firewall</code>
+                安装 PF 规则可提供内核级断线保护：<code>sudo "$HOME/.cim/bin/cim" install-firewall</code>
             </p>
         </div>
     </section>
@@ -561,7 +595,7 @@ cd CXI
                 <div class="step-num">4</div>
                 <div class="step-body">
                     <div class="step-title">安装防火墙规则（推荐）</div>
-                    <div class="step-code" id="code-fw">sudo cim install-firewall</div>
+                    <div class="step-code" id="code-fw">sudo "$HOME/.cim/bin/cim" install-firewall</div>
                     <button class="btn-copy" onclick="copyCode('code-fw')">复制</button>
                 </div>
             </div>
@@ -741,7 +775,7 @@ async function poll() {
     } catch {}
 }
 
-setInterval(poll, 30000);
+setInterval(poll, 10000);
 setInterval(pollLogs, 5000);
 
 // ── 状态渲染 ───────────────────────────────────────────────
@@ -790,8 +824,23 @@ function renderInstance(inst) {
         const cls = {
             pass: 'pass', fail: 'fail', unknown: 'grey', unsupported: 'grey'
         }[inst.validation] || 'grey';
-        valEl.innerHTML = badge(cls, inst.validation.toUpperCase());
+        const labels = {
+            pass: 'PASS · 观测',
+            fail: 'FAIL · 需检查',
+            unknown: 'UNKNOWN · 无样本',
+            unsupported: 'UNSUPPORTED'
+        };
+        valEl.innerHTML = badge(cls, labels[inst.validation] || inst.validation.toUpperCase());
         valEl.title = inst.validation_details || '';
+    }
+    const detailEl = document.getElementById(id + '-validation-details');
+    if (detailEl) {
+        detailEl.textContent = inst.validation_details || '—';
+        detailEl.title = inst.validation_details || '';
+    }
+    const checkedAtEl = document.getElementById(id + '-validation-checked-at');
+    if (checkedAtEl) {
+        checkedAtEl.textContent = formatCheckTime(inst.validation_checked_at);
     }
 
     // button states
@@ -800,6 +849,12 @@ function renderInstance(inst) {
     const stopBtn   = document.getElementById(id + '-stop-btn');
     if (launchBtn) launchBtn.disabled = isRunning;
     if (stopBtn)   stopBtn.disabled   = !isRunning;
+}
+
+function formatCheckTime(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function renderFirewall(fw) {

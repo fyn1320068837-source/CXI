@@ -454,6 +454,18 @@ impl ProxyManager {
 
         let config = serde_json::json!({
             "log": { "level": "warn" },
+            // Resolve sing-box and health-check domains through DoH over the
+            // upstream SOCKS tunnel. Browser DNS is separately constrained by
+            // Chrome's host-resolver rules and SOCKS5 remote resolution.
+            "dns": {
+                "servers": [{
+                    "tag": "remote",
+                    "address": "https://1.1.1.1/dns-query",
+                    "detour": "upstream"
+                }],
+                "strategy": "ipv4_only",
+                "final": "remote"
+            },
             "inbounds": [
                 { "type": "http",  "tag": "http-in",  "listen": "127.0.0.1", "listen_port": 7890 },
                 { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 7891 }

@@ -190,6 +190,7 @@ impl InstanceManager {
                     InstanceValidation {
                         status: ValidationStatus::Unsupported,
                         details: "Desktop 自动覆盖未支持，当前为软隔离模式".to_string(),
+                        checked_at: None,
                     },
                 );
                 continue;
@@ -209,25 +210,87 @@ impl InstanceManager {
             let pids = adapter.process_tree(handle).await;
             match self.verifier.verify_process(&pids).await {
                 Ok(check) => {
-                    let status = match check.status() {
+                    let validation_status = check.status();
+                    let status = match validation_status {
                         VerificationStatus::Pass => ValidationStatus::Pass,
                         VerificationStatus::Fail => ValidationStatus::Fail,
                         VerificationStatus::Unknown => ValidationStatus::Unknown,
                     };
+                    let details = check.details();
+                    let checked_at = chrono::Utc::now().to_rfc3339();
+                    let kind_str = format!("{kind:?}").to_lowercase();
+                    let status_str = match validation_status {
+                        VerificationStatus::Pass => "pass",
+                        VerificationStatus::Fail => "fail",
+                        VerificationStatus::Unknown => "unknown",
+                    };
+                    if check.direct_connections.is_empty() {
+                        tracing::info!(
+                            instance = %kind_str,
+                            status = status_str,
+                            checked_pids = check.checked_pids.len(),
+                            proxied = check.proxied_connections,
+                            local = check.local_connections,
+                            direct = 0,
+                            "Network validation snapshot"
+                        );
+                    } else {
+                        tracing::warn!(
+                            instance = %kind_str,
+                            status = status_str,
+                            checked_pids = check.checked_pids.len(),
+                            proxied = check.proxied_connections,
+                            local = check.local_connections,
+                            direct = check.direct_connections.len(),
+                            details = %details,
+                            "Network validation detected direct connection"
+                        );
+                    }
+                    if let Some(storage) = &self.storage {
+                        if let Err(error) = storage.save_validation_evidence(
+                            &kind_str,
+                            status_str,
+                            check.proxied_connections,
+                            check.local_connections,
+                            check.direct_connections.len(),
+                            &details,
+                        ) {
+                            tracing::warn!(
+                                instance = %kind_str,
+                                error = %error,
+                                "Failed to persist network validation evidence"
+                            );
+                        }
+                    }
                     result.insert(
                         kind,
                         InstanceValidation {
                             status,
-                            details: check.details(),
+                            details,
+                            checked_at: Some(checked_at),
                         },
                     );
                 }
                 Err(error) => {
+                    let details = format!("lsof verification failed: {}", error);
+                    let kind_str = format!("{kind:?}").to_lowercase();
+                    if let Some(storage) = &self.storage {
+                        if let Err(storage_error) =
+                            storage.save_validation_evidence(&kind_str, "fail", 0, 0, 0, &details)
+                        {
+                            tracing::warn!(
+                                instance = %kind_str,
+                                error = %storage_error,
+                                "Failed to persist network validation error"
+                            );
+                        }
+                    }
                     result.insert(
                         kind,
                         InstanceValidation {
                             status: ValidationStatus::Fail,
-                            details: format!("lsof verification failed: {}", error),
+                            details,
+                            checked_at: Some(chrono::Utc::now().to_rfc3339()),
                         },
                     );
                 }
@@ -240,6 +303,7 @@ impl InstanceManager {
 pub struct InstanceValidation {
     pub status: ValidationStatus,
     pub details: String,
+    pub checked_at: Option<String>,
 }
 
 impl InstanceValidation {
@@ -247,6 +311,7 @@ impl InstanceValidation {
         Self {
             status: ValidationStatus::Unknown,
             details: details.to_string(),
+            checked_at: None,
         }
     }
 }

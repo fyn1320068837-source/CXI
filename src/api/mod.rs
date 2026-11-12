@@ -19,6 +19,7 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     pub tx: broadcast::Sender<String>,
     pub instance_manager: Arc<RwLock<InstanceManager>>,
+    pub storage: Arc<Storage>,
     pub log_buffer: Arc<RwLock<Vec<LogEntry>>>,
     pub geo_profile: SharedGeoProfile,
     pub proxy_manager: Arc<ProxyManager>,
@@ -61,12 +62,13 @@ pub async fn create_router(
         InstanceManager::with_geo_profile(geo_profile.clone())
             .with_allow_lan(allow_lan)
             .with_request_log_sender(request_log_tx)
-            .with_storage(storage),
+            .with_storage(storage.clone()),
     ));
 
     let state = AppState {
         tx,
         instance_manager,
+        storage,
         log_buffer,
         geo_profile,
         proxy_manager,
@@ -83,6 +85,7 @@ pub async fn create_router(
         .route("/api/instances/:kind/launch", post(launch_instance))
         .route("/api/instances/:kind/stop", post(stop_instance))
         .route("/api/logs", get(get_logs).delete(clear_logs))
+        .route("/api/validation/:kind", get(get_validation_history))
         .route("/ws", get(websocket_handler))
         .nest_service("/static", ServeDir::new("web"))
         .with_state(Arc::new(state))
@@ -146,6 +149,7 @@ struct InstanceStatus {
     pid: Option<u32>,
     validation: String,
     validation_details: String,
+    validation_checked_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -185,14 +189,25 @@ async fn get_status(
                 (
                     validation_name(&value.status).to_string(),
                     value.details.clone(),
+                    value.checked_at.clone(),
                 )
             })
-            .unwrap_or_else(|| ("unknown".to_string(), "validation unavailable".to_string()))
+            .unwrap_or_else(|| {
+                (
+                    "unknown".to_string(),
+                    "validation unavailable".to_string(),
+                    None,
+                )
+            })
     };
-    let (code_validation, code_validation_details) = validation_for(InstanceKind::Code);
-    let (desktop_validation, desktop_validation_details) = validation_for(InstanceKind::Desktop);
-    let (vscode_validation, vscode_validation_details) = validation_for(InstanceKind::VsCode);
-    let (web_validation, web_validation_details) = validation_for(InstanceKind::Web);
+    let (code_validation, code_validation_details, code_checked_at) =
+        validation_for(InstanceKind::Code);
+    let (desktop_validation, desktop_validation_details, desktop_checked_at) =
+        validation_for(InstanceKind::Desktop);
+    let (vscode_validation, vscode_validation_details, vscode_checked_at) =
+        validation_for(InstanceKind::VsCode);
+    let (web_validation, web_validation_details, web_checked_at) =
+        validation_for(InstanceKind::Web);
 
     let instances = vec![
         InstanceStatus {
@@ -209,6 +224,7 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::Code).copied().flatten(),
             validation: code_validation,
             validation_details: code_validation_details,
+            validation_checked_at: code_checked_at,
         },
         InstanceStatus {
             kind: "desktop".to_string(),
@@ -224,6 +240,7 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::Desktop).copied().flatten(),
             validation: desktop_validation,
             validation_details: desktop_validation_details,
+            validation_checked_at: desktop_checked_at,
         },
         InstanceStatus {
             kind: "vscode".to_string(),
@@ -239,6 +256,7 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::VsCode).copied().flatten(),
             validation: vscode_validation,
             validation_details: vscode_validation_details,
+            validation_checked_at: vscode_checked_at,
         },
         InstanceStatus {
             kind: "web".to_string(),
@@ -250,6 +268,7 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::Web).copied().flatten(),
             validation: web_validation,
             validation_details: web_validation_details,
+            validation_checked_at: web_checked_at,
         },
     ];
 
@@ -564,6 +583,32 @@ async fn clear_logs(
         "success": true,
         "cleared": cleared,
     }))
+}
+
+async fn get_validation_history(
+    axum::extract::Path(kind): axum::extract::Path<String>,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let allowed = matches!(kind.as_str(), "code" | "desktop" | "vscode" | "web");
+    if !allowed {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": format!("Unknown instance kind: {}", kind),
+        }));
+    }
+
+    match state.storage.recent_validation_evidence(&kind, 50) {
+        Ok(evidence) => Json(serde_json::json!({
+            "success": true,
+            "instance": kind,
+            "evidence": evidence,
+        })),
+        Err(error) => Json(serde_json::json!({
+            "success": false,
+            "instance": kind,
+            "error": error.to_string(),
+        })),
+    }
 }
 
 async fn launch_instance(

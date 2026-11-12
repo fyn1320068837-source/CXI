@@ -1,5 +1,5 @@
 // Network Verifier - lsof-based process-level validation
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::net::IpAddr;
 use std::process::Command;
 
@@ -46,9 +46,24 @@ impl NetworkVerifier {
             .output()?;
 
         // lsof returns 1 when a process has no matching sockets. That is a
-        // valid empty result, while a missing binary is surfaced to the API.
-        if !output.status.success() {
+        // valid empty result; permission errors, missing binaries, and other
+        // failures must remain visible instead of being mistaken for a clean
+        // process.
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if output.status.code() == Some(1) && stderr.is_empty() {
             return Ok(Vec::new());
+        }
+        if !output.status.success() {
+            return Err(anyhow!(
+                "lsof failed for pid {} (exit {:?}): {}",
+                pid,
+                output.status.code(),
+                if stderr.is_empty() {
+                    "no error detail"
+                } else {
+                    &stderr
+                }
+            ));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);

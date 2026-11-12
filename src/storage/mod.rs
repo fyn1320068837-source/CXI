@@ -20,6 +20,16 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ValidationEvidence {
+    pub timestamp: String,
+    pub status: String,
+    pub proxied_count: usize,
+    pub local_count: usize,
+    pub direct_count: usize,
+    pub details: Option<String>,
+}
+
 impl Storage {
     pub fn new(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)?;
@@ -146,6 +156,87 @@ impl Storage {
         )?;
 
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Persist one process-level network validation result for the most recent
+    /// instance state of the given kind. The evidence is intentionally a
+    /// summary: direct endpoints are already included in `details`, while the
+    /// numeric counters make the result easy to query and aggregate.
+    pub fn save_validation_evidence(
+        &self,
+        kind: &str,
+        status: &str,
+        proxied_count: usize,
+        local_count: usize,
+        direct_count: usize,
+        details: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO validation_evidence
+                (instance_id, timestamp, status, proxied_count, local_count, direct_count, details)
+             SELECT id, ?2, ?3, ?4, ?5, ?6, ?7
+             FROM instance_state
+             WHERE kind = ?1
+             ORDER BY id DESC
+             LIMIT 1",
+            params![
+                kind,
+                &now,
+                status,
+                proxied_count as i64,
+                local_count as i64,
+                direct_count as i64,
+                details,
+            ],
+        )?;
+        // Status polling is intentionally frequent so a leak is detected
+        // quickly. Keep a bounded history per instance rather than allowing
+        // the evidence table to grow forever.
+        conn.execute(
+            "DELETE FROM validation_evidence
+             WHERE id IN (
+                 SELECT ve.id
+                 FROM validation_evidence ve
+                 JOIN instance_state state ON state.id = ve.instance_id
+                 WHERE state.kind = ?1
+                 ORDER BY ve.id DESC
+                 LIMIT -1 OFFSET 500
+             )",
+            params![kind],
+        )?;
+        Ok(())
+    }
+
+    pub fn recent_validation_evidence(
+        &self,
+        kind: &str,
+        limit: usize,
+    ) -> Result<Vec<ValidationEvidence>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT ve.timestamp, ve.status, ve.proxied_count, ve.local_count,
+                    ve.direct_count, ve.details
+             FROM validation_evidence ve
+             JOIN instance_state state ON state.id = ve.instance_id
+             WHERE state.kind = ?1
+             ORDER BY ve.id DESC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![kind, limit as i64], |row| {
+            Ok(ValidationEvidence {
+                timestamp: row.get(0)?,
+                status: row.get(1)?,
+                proxied_count: row.get::<_, i64>(2)?.max(0) as usize,
+                local_count: row.get::<_, i64>(3)?.max(0) as usize,
+                direct_count: row.get::<_, i64>(4)?.max(0) as usize,
+                details: row.get(5)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     #[allow(dead_code)]

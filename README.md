@@ -107,6 +107,7 @@ GET  /health                            健康检查
 GET  /api/status                        全局状态（代理、四实例、防火墙）
 GET  /api/logs                          当前请求日志（内存缓冲）
 DELETE /api/logs                        清空当前请求日志
+GET  /api/validation/{kind}             最近的进程级连接验证证据
 POST /api/instances/{code|vscode|web|desktop}/launch  启动实例
 POST /api/instances/{code|vscode|web|desktop}/stop    停止实例
 POST /api/proxy/test                    测试代理连通性
@@ -122,6 +123,8 @@ WS   /ws                                实时状态推送
 - **日志脱敏**：IP 保留前两段，密码全遮蔽
 - **Claude 凭据零接触**：代码禁止打开任何实例的 Cookies / credentials 路径
 - **HTTP 仅本地**：API 只绑 `127.0.0.1`，不对外暴露
+
+Web 出口泄漏的判定方法、现场命令和证据边界见 [`docs/web-leak-evaluation.md`](docs/web-leak-evaluation.md)。请求 URL 日志只说明访问目标，是否经过代理以 `/api/status` 的进程级 lsof 证据为准。
 
 ## 出口 IP 默认环境
 

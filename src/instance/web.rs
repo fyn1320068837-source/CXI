@@ -87,7 +87,12 @@ impl InstanceAdapter for WebAdapter {
             format!("--user-data-dir={}", session_dir),
             "--proxy-server=socks5://127.0.0.1:7891".to_string(),
             "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1".to_string(),
-            "--force-webrtc-ip-handling-policy=default_public_interface_only".to_string(),
+            // Do not allow WebRTC or HTTP/3 to create UDP paths outside the
+            // SOCKS5 tunnel. The process-level verifier still checks the
+            // resulting sockets, but these flags remove the browser's direct
+            // UDP fallback paths up front.
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
+            "--disable-quic".to_string(),
             "--disable-background-networking".to_string(),
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
@@ -191,8 +196,38 @@ impl InstanceAdapter for WebAdapter {
     }
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
-        descendant_pids(handle.root_pid)
+        let mut pids = descendant_pids(handle.root_pid);
+        if let Some(session_dir) = self.sessions.lock().unwrap().get(&handle.root_pid).cloned() {
+            pids.extend(processes_using_session_dir(&session_dir));
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        pids
     }
+}
+
+/// Chromium normally keeps every helper below the browser root, but a helper
+/// can be briefly reparented during a crash or restart. Match the unique
+/// per-launch user-data directory as a second signal so validation still
+/// covers that helper while never sweeping in another browser profile.
+fn processes_using_session_dir(session_dir: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
+        return Vec::new();
+    };
+
+    let marker = format!("--user-data-dir={session_dir}");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let command = fields.collect::<Vec<_>>().join(" ");
+            if !command.contains(&marker) {
+                return None;
+            }
+            pid.trim().parse().ok()
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize, Clone)]

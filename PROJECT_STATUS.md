@@ -79,6 +79,8 @@
 - launchd 已切换到用户目录的稳定入口 `~/.cim/bin/cim`，该入口指向工作区 `target/release/cim`；首次安装仍负责安装 root-owned helper，后续代码更新执行 `./scripts/restart-daemon.sh` 即可构建并重启，无需再次 `sudo cp`。plist 保留 `WatchPaths`，用于守护进程未运行时的重新拉起。
 - VS Code 联调已执行，但当前主机没有 `code` 命令或 VS Code.app，启动结果记录为“未安装”。
 - Web Chrome 网络子进程的 lsof 样本显示外部 TCP 连接均到 `127.0.0.1:7891`，本地 mDNS UDP 保持本地分类。
+- Web 全面泄漏评估已补强：Chrome 禁用 QUIC 和非代理 WebRTC UDP；sing-box 生成 `ipv4_only` DoH 并经 `upstream` 出站；`/api/status` 现在返回验证时间和连接证据，`/api/validation/web` 返回最近历史，SQLite 每实例保留最多 500 条证据。
+- 2026-11-12 真实 Web 复测：`checked 11 pids; proxied=14, local=18, direct=0`，递归 lsof 未发现 UDP 53，公网连接未出现在 Web 进程树；生成的 sing-box 配置通过 `sing-box check`，真实代理脚本新增 WebRTC/QUIC、DNS UDP 和历史证据断言。
 
 ---
 

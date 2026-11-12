@@ -65,6 +65,9 @@ import json, sys
 data, kind = json.loads(sys.argv[1]), sys.argv[2]
 instance = next(item for item in data["instances"] if item["kind"] == kind)
 assert instance["validation"] == "pass", instance
+assert instance.get("validation_checked_at"), instance
+details = instance.get("validation_details", "")
+assert "direct=0" in details and "proxied=" in details, instance
 print(instance["pid"])
 PY
 )"
@@ -73,6 +76,8 @@ PY
     command_line="$(ps -p "$pid" -o command=)"
     grep -F -- '--proxy-server=socks5://127.0.0.1:7891' <<< "$command_line"
     grep -F -- "--lang=$expected_lang" <<< "$command_line"
+    grep -F -- '--force-webrtc-ip-handling-policy=disable_non_proxied_udp' <<< "$command_line"
+    grep -F -- '--disable-quic' <<< "$command_line"
   elif [[ "$kind" == "code" ]]; then
     process_env="$(ps eww -p "$pid")"
     grep -F "TZ=$expected_tz" <<< "$process_env"
@@ -90,7 +95,22 @@ PY
   done
   for process_pid in "${pids[@]}"; do
     lsof -nP -a -i -p "$process_pid" 2>/dev/null || true
+    if lsof -nP -a -iUDP:53 -p "$process_pid" 2>/dev/null | grep -q 'UDP'; then
+      echo "FAIL: direct DNS UDP socket detected for $kind pid $process_pid" >&2
+      exit 1
+    fi
   done
+  evidence="$(curl_json "$BASE_URL/api/validation/$kind")"
+  python3 - "$evidence" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload.get("success"), payload
+assert payload.get("evidence"), payload
+latest = payload["evidence"][0]
+assert latest["status"] == "pass", latest
+assert latest["direct_count"] == 0, latest
+assert latest["proxied_count"] > 0, latest
+PY
   curl_json -X POST "$BASE_URL/api/instances/$kind/stop" >/dev/null
 done
 
