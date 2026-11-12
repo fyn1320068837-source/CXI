@@ -82,7 +82,7 @@ pub async fn create_router(
         .route("/api/proxy/restart", post(restart_proxy))
         .route("/api/instances/:kind/launch", post(launch_instance))
         .route("/api/instances/:kind/stop", post(stop_instance))
-        .route("/api/logs", get(get_logs))
+        .route("/api/logs", get(get_logs).delete(clear_logs))
         .route("/ws", get(websocket_handler))
         .nest_service("/static", ServeDir::new("web"))
         .with_state(Arc::new(state))
@@ -539,6 +539,31 @@ async fn get_logs(
 ) -> Json<serde_json::Value> {
     let logs = state.log_buffer.read().await;
     Json(serde_json::json!({ "logs": *logs }))
+}
+
+async fn clear_logs(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let cleared = {
+        let mut logs = state.log_buffer.write().await;
+        let count = logs.len();
+        logs.clear();
+        count
+    };
+
+    // Keep every open dashboard in sync with the server-side buffer.
+    let _ = state.tx.send(
+        serde_json::json!({
+            "type": "logs_cleared",
+            "count": cleared,
+        })
+        .to_string(),
+    );
+
+    Json(serde_json::json!({
+        "success": true,
+        "cleared": cleared,
+    }))
 }
 
 async fn launch_instance(

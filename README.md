@@ -105,6 +105,8 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 ```
 GET  /health                            健康检查
 GET  /api/status                        全局状态（代理、四实例、防火墙）
+GET  /api/logs                          当前请求日志（内存缓冲）
+DELETE /api/logs                        清空当前请求日志
 POST /api/instances/{code|vscode|web|desktop}/launch  启动实例
 POST /api/instances/{code|vscode|web|desktop}/stop    停止实例
 POST /api/proxy/test                    测试代理连通性
