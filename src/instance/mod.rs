@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
+use tokio::sync::mpsc;
 
 use crate::geoip::GeoProfile;
 
@@ -20,6 +21,20 @@ pub enum InstanceKind {
 pub struct ProcessHandle {
     pub root_pid: u32,
 }
+
+/// A completed request observed from an instance's network stack.
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestLogEntry {
+    pub timestamp: String,
+    pub instance: String,
+    pub method: String,
+    pub url: String,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub size_bytes: u64,
+}
+
+pub type RequestLogSender = mpsc::Sender<RequestLogEntry>;
 
 #[derive(Debug)]
 pub struct CapabilityReport {

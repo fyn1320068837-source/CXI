@@ -1,7 +1,7 @@
 // Instance Manager - manages lifecycle of all instances
 use super::{
-    CodeAdapter, DesktopAdapter, InstanceAdapter, InstanceKind, ProcessHandle, ValidationStatus,
-    VsCodeAdapter, WebAdapter,
+    CodeAdapter, DesktopAdapter, InstanceAdapter, InstanceKind, ProcessHandle, RequestLogSender,
+    ValidationStatus, VsCodeAdapter, WebAdapter,
 };
 use crate::geoip::SharedGeoProfile;
 use crate::storage::Storage;
@@ -57,6 +57,15 @@ impl InstanceManager {
 
     pub fn with_storage(mut self, storage: Arc<Storage>) -> Self {
         self.storage = Some(storage);
+        self
+    }
+
+    pub fn with_request_log_sender(mut self, sender: RequestLogSender) -> Self {
+        if let Some(web) = Arc::get_mut(&mut self.web) {
+            web.set_request_log_sender(sender);
+        } else {
+            tracing::warn!("Could not attach request log sink to WebAdapter");
+        }
         self
     }
 

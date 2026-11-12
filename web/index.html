@@ -591,6 +591,7 @@ function switchSection(name) {
     if (name === 'logs') {
         newLogCount = 0;
         document.getElementById('htab-logs').textContent = '📋 日志管理';
+        pollLogs();
         renderLogs();
     }
     try { localStorage.setItem('cim-tab', name); } catch {}
@@ -620,7 +621,7 @@ function renderLogs() {
     const filtered = logs.filter(l => {
         if (instF   && l.instance !== instF) return false;
         if (statusF && !String(l.status).startsWith(statusF)) return false;
-        if (search  && !l.url.toLowerCase().includes(search)) return false;
+        if (search  && !(l.url || '').toLowerCase().includes(search)) return false;
         return true;
     });
 
@@ -633,7 +634,7 @@ function renderLogs() {
     }
 
     tbody.innerHTML = filtered.map(l => {
-        const sc = l.status >= 500 ? 'fail' : l.status >= 400 ? 'warn' : 'pass';
+        const sc = l.status === 0 ? 'warn' : l.status >= 500 ? 'fail' : l.status >= 400 ? 'warn' : 'pass';
         const lat = l.latency_ms < 1000 ? l.latency_ms + 'ms' : (l.latency_ms/1000).toFixed(1) + 's';
         const sz  = l.size_bytes > 0 ? (l.size_bytes < 1024 ? l.size_bytes + 'B' : (l.size_bytes/1024).toFixed(1) + 'KB') : '—';
         const inst = {code:'A',desktop:'B',vscode:'C',web:'D'}[l.instance] || l.instance;
@@ -641,8 +642,8 @@ function renderLogs() {
             <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${l.timestamp}</td>
             <td style="padding:7px 10px"><span class="badge badge-grey">${inst}</span></td>
             <td style="padding:7px 10px;color:var(--accent);font-weight:600">${l.method}</td>
-            <td style="padding:7px 10px;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${l.url}">${l.url}</td>
-            <td style="padding:7px 10px"><span class="badge badge-${sc}">${l.status}</span></td>
+            <td style="padding:7px 10px;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(l.url || '')}">${escapeHtml(l.url || '')}</td>
+            <td style="padding:7px 10px"><span class="badge badge-${sc}">${l.status || 'ERR'}</span></td>
             <td style="padding:7px 10px;text-align:right;color:var(--muted)">${lat}</td>
             <td style="padding:7px 10px;text-align:right;color:var(--muted)">${sz}</td>
         </tr>`;
@@ -650,6 +651,24 @@ function renderLogs() {
 }
 
 function clearLogs() { logs = []; renderLogs(); }
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+async function pollLogs() {
+    try {
+        const r = await fetch('/api/logs');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (Array.isArray(d.logs)) {
+            logs = d.logs;
+            renderLogs();
+        }
+    } catch {}
+}
 
 // ── WebSocket ──────────────────────────────────────────────
 let ws = null;
@@ -662,12 +681,14 @@ function connectWS() {
         setWSDot(true);
         clearTimeout(reconnectTimer);
         poll(); // 立即拉一次完整状态
+        pollLogs();
     };
 
     ws.onmessage = ({ data }) => {
         try {
             const msg = JSON.parse(data);
             if (msg.type === 'status_update') applyStatus(msg.data);
+            if (msg.type === 'request_log' && msg.data) addLog(msg.data);
         } catch {}
     };
 
@@ -695,6 +716,7 @@ async function poll() {
 }
 
 setInterval(poll, 30000);
+setInterval(pollLogs, 5000);
 
 // ── 状态渲染 ───────────────────────────────────────────────
 function applyStatus(d) {

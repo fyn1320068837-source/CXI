@@ -1,6 +1,6 @@
 // API Server module - HTTP REST + WebSocket endpoints
 use crate::geoip::{GeoProfile, SharedGeoProfile};
-use crate::instance::{InstanceKind, InstanceManager, ValidationStatus};
+use crate::instance::{InstanceKind, InstanceManager, RequestLogEntry, ValidationStatus};
 use crate::proxy::ProxyManager;
 use crate::storage::Storage;
 use axum::{
@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tower_http::services::ServeDir;
 
 // Global state for broadcasting updates
@@ -24,16 +24,7 @@ pub struct AppState {
     pub proxy_manager: Arc<ProxyManager>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct LogEntry {
-    pub timestamp: String,
-    pub instance: String,
-    pub method: String,
-    pub url: String,
-    pub status: u16,
-    pub latency_ms: u64,
-    pub size_bytes: u64,
-}
+pub type LogEntry = RequestLogEntry;
 
 pub async fn create_router(
     storage: Arc<Storage>,
@@ -43,10 +34,33 @@ pub async fn create_router(
 ) -> Router {
     let (tx, _rx) = broadcast::channel(100);
     let log_buffer: Arc<RwLock<Vec<LogEntry>>> = Arc::new(RwLock::new(Vec::new()));
+    let (request_log_tx, mut request_log_rx) = mpsc::channel::<RequestLogEntry>(1024);
+
+    // Keep the in-memory log bounded and fan each browser request out to the
+    // dashboard over the existing WebSocket connection.
+    let log_buffer_task = log_buffer.clone();
+    let tx_task = tx.clone();
+    tokio::spawn(async move {
+        while let Some(entry) = request_log_rx.recv().await {
+            {
+                let mut logs = log_buffer_task.write().await;
+                logs.insert(0, entry.clone());
+                logs.truncate(2_000);
+            }
+            let _ = tx_task.send(
+                serde_json::json!({
+                    "type": "request_log",
+                    "data": entry,
+                })
+                .to_string(),
+            );
+        }
+    });
 
     let instance_manager = Arc::new(RwLock::new(
         InstanceManager::with_geo_profile(geo_profile.clone())
             .with_allow_lan(allow_lan)
+            .with_request_log_sender(request_log_tx)
             .with_storage(storage),
     ));
 
