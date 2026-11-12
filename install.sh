@@ -62,9 +62,6 @@ echo ""
 
 # ── 安装二进制 ───────────────────────────
 echo "▸ 安装二进制..."
-sudo cp target/release/cim /usr/local/bin/cim
-sudo chmod +x /usr/local/bin/cim
-echo "  /usr/local/bin/cim ✓"
 mkdir -p "${HOME}/.cim/bin"
 ln -sfn "${CIM_SOURCE_DIR}/target/release/cim" "${CIM_RUNTIME_BIN}"
 echo "  ${CIM_RUNTIME_BIN} -> ${CIM_SOURCE_DIR}/target/release/cim ✓"
@@ -206,7 +203,7 @@ echo ""
 echo "下一步:"
 echo "  1. 打开浏览器访问 http://localhost:8080"
 echo "  2. 配置 SOCKS5 代理信息"
-echo "  3. (推荐) sudo cim install-firewall  # 安装 PF 防火墙兜底规则"
+echo "  3. (推荐) sudo ${CIM_RUNTIME_BIN} install-firewall  # 安装 PF 防火墙兜底规则"
 echo ""
 echo "卸载: ./uninstall.sh"
 echo ""

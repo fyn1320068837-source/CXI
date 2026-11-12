@@ -27,7 +27,7 @@ cd ~/CXI
 ./scripts/restart-daemon.sh
 ```
 
-脚本会重新构建并通过 launchd 重启守护进程，不需要每次再运行安装脚本或使用 `sudo`。`/usr/local/bin/cim` 仅作为首次安装和兼容命令保留。
+脚本会重新构建并通过 launchd 重启守护进程，不需要每次再运行安装脚本或使用 `sudo`。当前命令入口是 `~/.cim/bin/cim`。
 
 ### 配置代理
 
@@ -43,7 +43,7 @@ launchctl load    ~/Library/LaunchAgents/com.cim.daemon.plist
 ### 安装防火墙规则（推荐）
 
 ```bash
-sudo cim install-firewall
+sudo "$HOME/.cim/bin/cim" install-firewall
 ```
 
 提供内核级断线保护（PF anchor，按 `cimgrp` 组阻断）。安装命令会写入
