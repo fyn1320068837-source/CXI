@@ -74,6 +74,7 @@
 - Web 首屏语言覆盖已调整为“先启动 about:blank，再注入 CDP 语言/时区/位置和 Accept-Language，最后首次导航 Claude”，避免首次英文、刷新后才切换的问题。
 - Web Chrome 的 CDP Network 事件已接入 `/api/logs` 和控制台 WebSocket；记录方法、脱敏 URL、状态、耗时和响应大小。
 - 2026-11-12 用真实 SOCKS5 出口复测：新版 Web 启动成功，`Page.navigate` 回执约 9.4 秒；放宽 DevTools 等待上限后不再被误判为失败。`/api/status` 显示 `validation=pass`（`checked 11 pids; proxied=6, local=1, direct=0`），`/api/logs` 已采到 Claude/Cloudflare 200 响应。
+- 重启并安装新版二进制后再次验证：`/usr/local/bin/cim` 与 release 校验值一致，正式 launchd Web 实例为 `validation=pass`（`proxied=22, local=17, direct=0`），`/api/logs` 已持续记录首屏资源和后续请求。
 - VS Code 联调已执行，但当前主机没有 `code` 命令或 VS Code.app，启动结果记录为“未安装”。
 - Web Chrome 网络子进程的 lsof 样本显示外部 TCP 连接均到 `127.0.0.1:7891`，本地 mDNS UDP 保持本地分类。
 
@@ -217,7 +218,7 @@ tx.send(status_json)?;
 - Desktop 尚未进入 VM 或独立启动环境，保持 `UNSUPPORTED`。
 - 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测。
 - Claude 登录页的 Permissions-Policy 可能阻止脚本读取 geolocation；CDP 覆盖命令仍会发送。
-- 新版浏览器首屏、请求日志和 DevTools 超时修复已通过 `cargo check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`；当前 launchd 仍指向系统安装的旧二进制，需要管理员执行安装后才会对日常启动生效。
+- 新版浏览器首屏、请求日志和 DevTools 超时修复已通过 `cargo check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`，并已安装到 launchd 使用的 `/usr/local/bin/cim`。
 
 ### 已完成加固
 - GeoIP 10 分钟缓存、30 秒失败限流、IPv4/IPv6 解析和出口 IP 变化清理。
