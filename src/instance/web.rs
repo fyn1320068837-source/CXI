@@ -121,31 +121,47 @@ impl InstanceAdapter for WebAdapter {
 
         if profile.is_resolved() {
             let capture_requests = self.request_log_tx.is_some();
-            let socket = match apply_browser_profile(debug_port, &profile, capture_requests).await {
-                Ok(socket) => socket,
-                Err(error) => {
-                    tracing::error!(
-                        port = debug_port,
-                        error = %error,
-                        chain = %format!("{:#}", error),
-                        "Failed to apply browser locale/timezone profile"
-                    );
-                    let _ = nix::sys::signal::kill(
-                        nix::unistd::Pid::from_raw(root_pid as i32),
-                        nix::sys::signal::Signal::SIGTERM,
-                    );
-                    let _ = std::fs::remove_dir_all(&session_dir);
-                    return Err(error.context("Failed to apply browser locale/timezone profile"));
-                }
-            };
+            let browser_session =
+                match apply_browser_profile(debug_port, &profile, capture_requests).await {
+                    Ok(session) => session,
+                    Err(error) => {
+                        tracing::error!(
+                            port = debug_port,
+                            error = %error,
+                            chain = %format!("{:#}", error),
+                            "Failed to apply browser locale/timezone profile"
+                        );
+                        let _ = nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(root_pid as i32),
+                            nix::sys::signal::Signal::SIGTERM,
+                        );
+                        let _ = std::fs::remove_dir_all(&session_dir);
+                        return Err(
+                            error.context("Failed to apply browser locale/timezone profile")
+                        );
+                    }
+                };
+
+            let initial_target_id = browser_session.target_id.clone();
 
             // Keep the same CDP connection that installed the overrides. A
             // second debugger client can race the profile connection on some
             // Chrome builds, so request events are consumed from this socket
             // after the first navigation instead of attaching another client.
             if let Some(sender) = self.request_log_tx.clone() {
-                tokio::spawn(monitor_browser_socket(socket, root_pid, sender));
+                tokio::spawn(monitor_browser_socket(
+                    browser_session.socket,
+                    root_pid,
+                    sender.clone(),
+                ));
             }
+            tokio::spawn(monitor_browser_targets(
+                debug_port,
+                root_pid,
+                profile,
+                initial_target_id,
+                self.request_log_tx.clone(),
+            ));
         } else if let Some(sender) = self.request_log_tx.clone() {
             // Without GeoIP data Chrome starts directly on Claude, so the
             // monitor attaches independently because there is no profile
@@ -181,11 +197,18 @@ impl InstanceAdapter for WebAdapter {
 
 #[derive(Debug, Deserialize, Clone)]
 struct DevToolsTarget {
+    #[serde(rename = "id")]
+    target_id: Option<String>,
     #[serde(rename = "type")]
     target_type: Option<String>,
     url: Option<String>,
     #[serde(rename = "webSocketDebuggerUrl")]
     websocket_url: Option<String>,
+}
+
+struct BrowserProfileSession {
+    socket: BrowserSocket,
+    target_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,7 +237,7 @@ async fn apply_browser_profile(
     port: u16,
     profile: &GeoProfile,
     capture_requests: bool,
-) -> Result<BrowserSocket> {
+) -> Result<BrowserProfileSession> {
     tracing::debug!(port, "Applying browser locale/timezone profile");
     // Chrome DevTools is a loopback endpoint. Do not let HTTP(S)_PROXY from
     // the host redirect these control requests through another proxy.
@@ -253,8 +276,10 @@ async fn apply_browser_profile(
     .await
     .context("Timed out waiting for Chrome DevTools")?;
 
+    let target_id = target.target_id.clone();
     let websocket_url = target
         .websocket_url
+        .clone()
         .context("Chrome did not expose a page DevTools endpoint")?;
 
     let version_endpoint = format!("http://127.0.0.1:{}/json/version", port);
@@ -365,7 +390,7 @@ async fn apply_browser_profile(
     .await?;
 
     tracing::debug!(port, "Browser locale/timezone profile applied");
-    Ok(socket)
+    Ok(BrowserProfileSession { socket, target_id })
 }
 
 #[derive(Debug)]
@@ -422,6 +447,333 @@ async fn monitor_browser_requests(port: u16, root_pid: u32, sender: RequestLogSe
         return;
     }
     monitor_browser_socket(socket, root_pid, sender).await;
+}
+
+/// Keep page-scoped CDP overrides in sync with new tabs and popup targets.
+/// Chrome applies `Emulation.*` and `Network.setUserAgentOverride` to a single
+/// target, so the initial page connection is not enough when the user opens a
+/// second page in the same isolated browser window.
+async fn monitor_browser_targets(
+    port: u16,
+    root_pid: u32,
+    profile: GeoProfile,
+    initial_target_id: Option<String>,
+    sender: Option<RequestLogSender>,
+) {
+    let client = match reqwest::Client::builder().no_proxy().build() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::debug!(port, "Could not create local DevTools client: {}", error);
+            return;
+        }
+    };
+    let version_endpoint = format!("http://127.0.0.1:{}/json/version", port);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let version = loop {
+        if !process_exists(root_pid) || Instant::now() >= deadline {
+            return;
+        }
+        if let Ok(response) = client.get(&version_endpoint).send().await {
+            if let Ok(version) = response.json::<DevToolsVersion>().await {
+                break version;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let Some(browser_ws) = version.websocket_url else {
+        tracing::debug!(port, "Chrome did not expose a browser DevTools endpoint");
+        return;
+    };
+    let Ok((mut socket, _)) = connect_async(browser_ws).await else {
+        tracing::debug!(port, "Could not attach Chrome target manager");
+        return;
+    };
+
+    let mut next_command_id = 1u64;
+    let auto_attach_id = next_command_id;
+    if send_target_command(
+        &mut socket,
+        &mut next_command_id,
+        None,
+        "Target.setAutoAttach",
+        json!({
+            "autoAttach": true,
+            "waitForDebuggerOnStart": true,
+            "flatten": true
+        }),
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
+
+    let mut pending = HashMap::<(String, String), PendingRequest>::new();
+    loop {
+        if !process_exists(root_pid) {
+            break;
+        }
+
+        let message = match tokio::time::timeout(Duration::from_secs(2), socket.next()).await {
+            Ok(Some(Ok(message))) => message,
+            Ok(Some(Err(_))) | Ok(None) => break,
+            Err(_) => continue,
+        };
+        let text = match message {
+            Message::Text(text) => text.to_string(),
+            Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            _ => continue,
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+
+        if value.get("id").and_then(|value| value.as_u64()) == Some(auto_attach_id) {
+            if let Some(error) = value.get("error") {
+                tracing::debug!(port, "Chrome target auto-attach failed: {}", error);
+                break;
+            }
+            continue;
+        }
+
+        let Some(method) = value.get("method").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if method == "Target.attachedToTarget" {
+            let params = value.get("params").cloned().unwrap_or_default();
+            let Some(session_id) = params.get("sessionId").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let target_info = params.get("targetInfo").cloned().unwrap_or_default();
+            let target_id = target_info.get("targetId").and_then(|value| value.as_str());
+            let target_type = target_info
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            tracing::debug!(
+                port,
+                target_id = ?target_id,
+                target_type,
+                "Chrome target attached"
+            );
+
+            let is_initial_page = target_type == "page"
+                && target_id.is_some()
+                && target_id == initial_target_id.as_deref();
+            if target_type == "page" && !is_initial_page {
+                if let Err(error) = configure_attached_page(
+                    &mut socket,
+                    &mut next_command_id,
+                    session_id,
+                    &profile,
+                    version.user_agent.as_deref(),
+                    sender.is_some(),
+                )
+                .await
+                {
+                    tracing::debug!(port, "Could not configure new Chrome page: {}", error);
+                } else {
+                    tracing::debug!(port, target_id = ?target_id, "Configured new Chrome page");
+                }
+            } else {
+                // Non-page targets (iframes, workers, extensions) must not
+                // remain paused when auto-attach is enabled.
+                let _ = send_target_command(
+                    &mut socket,
+                    &mut next_command_id,
+                    Some(session_id),
+                    "Runtime.runIfWaitingForDebugger",
+                    json!({}),
+                )
+                .await;
+            }
+            continue;
+        }
+
+        if method.starts_with("Network.") {
+            if let (Some(sender), Some(session_id)) = (
+                sender.as_ref(),
+                value.get("sessionId").and_then(|value| value.as_str()),
+            ) {
+                record_network_event(
+                    session_id,
+                    method,
+                    value.get("params").cloned().unwrap_or_default(),
+                    &mut pending,
+                    sender,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+async fn configure_attached_page(
+    socket: &mut BrowserSocket,
+    next_command_id: &mut u64,
+    session_id: &str,
+    profile: &GeoProfile,
+    user_agent: Option<&str>,
+    capture_requests: bool,
+) -> Result<()> {
+    if capture_requests {
+        send_target_command(
+            socket,
+            next_command_id,
+            Some(session_id),
+            "Network.enable",
+            json!({}),
+        )
+        .await?;
+    }
+    if let Some(language) = profile.language.as_deref() {
+        send_target_command(
+            socket,
+            next_command_id,
+            Some(session_id),
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({"source": language_override_script(language)}),
+        )
+        .await?;
+        if let Some(user_agent) = user_agent {
+            send_target_command(
+                socket,
+                next_command_id,
+                Some(session_id),
+                "Network.setUserAgentOverride",
+                json!({"userAgent": user_agent, "acceptLanguage": language}),
+            )
+            .await?;
+        }
+        send_target_command(
+            socket,
+            next_command_id,
+            Some(session_id),
+            "Emulation.setLocaleOverride",
+            json!({"locale": language}),
+        )
+        .await?;
+    }
+    if let Some(timezone) = profile.timezone.as_deref() {
+        send_target_command(
+            socket,
+            next_command_id,
+            Some(session_id),
+            "Emulation.setTimezoneOverride",
+            json!({"timezoneId": timezone}),
+        )
+        .await?;
+    }
+    if let (Some(latitude), Some(longitude)) = (profile.latitude, profile.longitude) {
+        send_target_command(
+            socket,
+            next_command_id,
+            Some(session_id),
+            "Emulation.setGeolocationOverride",
+            json!({"latitude": latitude, "longitude": longitude, "accuracy": 100.0}),
+        )
+        .await?;
+    }
+    send_target_command(
+        socket,
+        next_command_id,
+        Some(session_id),
+        "Runtime.runIfWaitingForDebugger",
+        json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn send_target_command(
+    socket: &mut BrowserSocket,
+    next_command_id: &mut u64,
+    session_id: Option<&str>,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<()> {
+    let id = *next_command_id;
+    *next_command_id += 1;
+    let mut command = json!({"id": id, "method": method, "params": params});
+    if let Some(session_id) = session_id {
+        command["sessionId"] = json!(session_id);
+    }
+    socket
+        .send(Message::Text(command.to_string()))
+        .await
+        .with_context(|| format!("Failed to send Chrome target command {}", method))?;
+    Ok(())
+}
+
+async fn record_network_event(
+    session_id: &str,
+    method: &str,
+    params: serde_json::Value,
+    pending: &mut HashMap<(String, String), PendingRequest>,
+    sender: &RequestLogSender,
+) {
+    let Some(request_id) = params.get("requestId").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let key = (session_id.to_string(), request_id.to_string());
+    match method {
+        "Network.requestWillBeSent" => {
+            let request = params.get("request").cloned().unwrap_or_default();
+            let Some(url) = request.get("url").and_then(|value| value.as_str()) else {
+                return;
+            };
+            if url.starts_with("data:") || url.starts_with("blob:") {
+                return;
+            }
+            pending.insert(
+                key,
+                PendingRequest {
+                    started_at: Instant::now(),
+                    method: request
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("GET")
+                        .to_string(),
+                    url: sanitize_request_url(url),
+                    status: 0,
+                },
+            );
+        }
+        "Network.responseReceived" => {
+            if let Some(request) = pending.get_mut(&key) {
+                request.status = params
+                    .get("response")
+                    .and_then(|response| response.get("status"))
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+                    .min(u16::MAX as u64) as u16;
+            }
+        }
+        "Network.loadingFinished" | "Network.loadingFailed" => {
+            if let Some(request) = pending.remove(&key) {
+                let failed = method == "Network.loadingFailed";
+                let entry = RequestLogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    instance: "web".to_string(),
+                    method: request.method,
+                    url: request.url,
+                    status: if failed { 0 } else { request.status },
+                    latency_ms: request.started_at.elapsed().as_millis() as u64,
+                    size_bytes: if failed {
+                        0
+                    } else {
+                        params
+                            .get("encodedDataLength")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0)
+                    },
+                };
+                let _ = sender.send(entry).await;
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn monitor_browser_socket(
