@@ -76,6 +76,7 @@
 - 2026-11-12 用真实 SOCKS5 出口复测：新版 Web 启动成功，`Page.navigate` 回执约 9.4 秒；放宽 DevTools 等待上限后不再被误判为失败。`/api/status` 显示 `validation=pass`（`checked 11 pids; proxied=6, local=1, direct=0`），`/api/logs` 已采到 Claude/Cloudflare 200 响应。
 - 重启并安装新版二进制后再次验证：`/usr/local/bin/cim` 与 release 校验值一致，正式 launchd Web 实例为 `validation=pass`（`proxied=22, local=17, direct=0`），`/api/logs` 已持续记录首屏资源和后续请求。
 - 新标签页/弹窗已加入 CDP `Target.setAutoAttach`：当前 release 实测新标签页首个文档仍为 `en-US`、`America/New_York`，并产生正常请求日志；新页验证为 `proxied=6, local=18, direct=0`。
+- launchd 已切换到用户目录的稳定入口 `~/.cim/bin/cim`，该入口指向工作区 `target/release/cim`；首次安装仍负责安装 root-owned helper，后续代码更新执行 `./scripts/restart-daemon.sh` 即可构建并重启，无需再次 `sudo cp`。plist 保留 `WatchPaths`，用于守护进程未运行时的重新拉起。
 - VS Code 联调已执行，但当前主机没有 `code` 命令或 VS Code.app，启动结果记录为“未安装”。
 - Web Chrome 网络子进程的 lsof 样本显示外部 TCP 连接均到 `127.0.0.1:7891`，本地 mDNS UDP 保持本地分类。
 
@@ -219,7 +220,7 @@ tx.send(status_json)?;
 - Desktop 尚未进入 VM 或独立启动环境，保持 `UNSUPPORTED`。
 - 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测。
 - Claude 登录页的 Permissions-Policy 可能阻止脚本读取 geolocation；CDP 覆盖命令仍会发送。
-- 新版浏览器首屏、请求日志、DevTools 超时和新标签页自动接管已通过 `cargo check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`；首个版本已部署到 `/usr/local/bin/cim`，新标签页接管补丁需要下一次安装后由 launchd 使用。
+- 新版浏览器首屏、请求日志、DevTools 超时和新标签页自动接管已通过 `cargo check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`；launchd 当前运行 `~/.cim/bin/cim`，新 release 可通过 `./scripts/restart-daemon.sh` 无 sudo 更新。
 
 ### 已完成加固
 - GeoIP 10 分钟缓存、30 秒失败限流、IPv4/IPv6 解析和出口 IP 变化清理。

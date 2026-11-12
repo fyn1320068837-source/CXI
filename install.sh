@@ -3,6 +3,10 @@ set -e
 
 CIM_VERSION="1.0.0"
 SING_BOX_VERSION="1.10.0"
+CIM_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+CIM_RUNTIME_BIN="${HOME}/.cim/bin/cim"
+
+cd "${CIM_SOURCE_DIR}"
 
 echo "╔══════════════════════════════════════╗"
 echo "║   Claude Instance Manager v${CIM_VERSION}   ║"
@@ -61,6 +65,9 @@ echo "▸ 安装二进制..."
 sudo cp target/release/cim /usr/local/bin/cim
 sudo chmod +x /usr/local/bin/cim
 echo "  /usr/local/bin/cim ✓"
+mkdir -p "${HOME}/.cim/bin"
+ln -sfn "${CIM_SOURCE_DIR}/target/release/cim" "${CIM_RUNTIME_BIN}"
+echo "  ${CIM_RUNTIME_BIN} -> ${CIM_SOURCE_DIR}/target/release/cim ✓"
 sudo install -d -m 0755 /usr/local/libexec
 sudo install -m 0755 target/release/cim-instance-launch /usr/local/libexec/cim-instance-launch
 echo "  /usr/local/libexec/cim-instance-launch ✓"
@@ -97,7 +104,7 @@ echo ""
 # ── 生成默认配置 ─────────────────────────
 echo "▸ 生成配置文件..."
 if [[ ! -f ~/.cim/config.toml ]]; then
-    /usr/local/bin/cim daemon --print-default-config > ~/.cim/config.toml 2>/dev/null || \
+    "${CIM_RUNTIME_BIN}" daemon --print-default-config > ~/.cim/config.toml 2>/dev/null || \
     cat > ~/.cim/config.toml << 'TOML'
 [daemon]
 listen_addr = "127.0.0.1:8080"
@@ -150,7 +157,7 @@ cat > "$PLIST" << EOF
     <key>Label</key>              <string>com.cim.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/cim</string>
+        <string>${CIM_RUNTIME_BIN}</string>
         <string>daemon</string>
     </array>
     <key>RunAtLoad</key>          <true/>
@@ -161,6 +168,12 @@ cat > "$PLIST" << EOF
     <dict>
         <key>RUST_LOG</key>       <string>info</string>
     </dict>
+    <key>WatchPaths</key>
+    <array>
+        <string>${CIM_SOURCE_DIR}/target/release/cim</string>
+    </array>
+    <key>WorkingDirectory</key>   <string>${CIM_SOURCE_DIR}</string>
+    <key>ThrottleInterval</key>   <integer>10</integer>
 </dict>
 </plist>
 EOF

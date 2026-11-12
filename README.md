@@ -18,6 +18,17 @@ cd CXI
 
 安装脚本自动完成：构建二进制、创建目录、下载 sing-box、注册 launchd 服务。
 
+### 更新代码后
+
+launchd 使用 `~/.cim/bin/cim` 这个用户目录入口，它会指向当前工作区的 release 构建。修改 Rust 代码后执行：
+
+```bash
+cd ~/CXI
+./scripts/restart-daemon.sh
+```
+
+脚本会重新构建并通过 launchd 重启守护进程，不需要每次再运行安装脚本或使用 `sudo`。`/usr/local/bin/cim` 仅作为首次安装和兼容命令保留。
+
 ### 配置代理
 
 打开 http://localhost:8080 → 点击「配置代理」，填入 SOCKS5 信息（密码保存在 Keychain）。

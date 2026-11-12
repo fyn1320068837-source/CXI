@@ -1,30 +1,25 @@
 #!/bin/bash
-# 重启 CIM 守护进程脚本
+# Build and restart the launchd-managed CIM daemon.
 
-set -e
+set -euo pipefail
 
-echo "停止旧守护进程..."
-pkill -f "cim daemon" || true
-sleep 2
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+RUNTIME_BIN="${HOME}/.cim/bin/cim"
 
-echo "清理旧日志..."
-rm -f /tmp/cim-*.log
+cd "$ROOT_DIR"
+cargo build --release
+mkdir -p "${HOME}/.cim/bin"
+ln -sfn "$ROOT_DIR/target/release/cim" "$RUNTIME_BIN"
 
-echo "启动新守护进程..."
-cd /Users/youzhisan/CXI
-target/release/cim daemon > /tmp/cim-latest.log 2>&1 &
-NEW_PID=$!
-echo $NEW_PID > /tmp/cim-daemon.pid
+launchctl kickstart -k "gui/$(id -u)/com.cim.daemon"
+for _ in $(seq 1 20); do
+    if curl -fsS --max-time 2 http://127.0.0.1:8080/health >/dev/null; then
+        echo "✅ 守护进程已使用最新 release 重启"
+        exit 0
+    fi
+    sleep 1
+done
 
-echo "等待启动..."
-sleep 3
-
-# 检查健康状态
-if curl -s http://localhost:8080/health > /dev/null; then
-    echo "✅ 守护进程启动成功 (PID: $NEW_PID)"
-    echo "日志: tail -f /tmp/cim-latest.log"
-else
-    echo "❌ 守护进程启动失败"
-    tail -20 /tmp/cim-latest.log
-    exit 1
-fi
+echo "❌ 守护进程启动失败，请查看 ~/.cim/logs/daemon.log"
+exit 1
