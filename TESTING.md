@@ -91,7 +91,7 @@ cat ~/.cim/sing-box/config.json | grep -A3 '"dns"'
 
 **预期**：`strategy: "ipv4_only"`，DNS 服务器通过 upstream 出站
 
-**实测**：配置、进程级 lsof 和 Web 验证均未发现 Web 进程 UDP 53；本机 tcpdump 需要 root 抓包权限，本轮未取得非交互 sudo 授权，因此不能宣称完成系统级包证据。
+**实测（2026-11-13）**：在真实 Web 实例中访问随机 DNS 探测域名，并递归检查 Web 进程树；`lsof` 未发现 UDP/53 连接（`udp53=0`）。DNS 由 sing-box 的 DoH 出站处理，未观察到实例直连 DNS。系统级 `tcpdump` 仍需要 root 抓包权限，当前 sudoers 未授权非交互执行 `tcpdump`，因此这里保留“包级待 root 抓包”状态，不把进程级结果扩大为全机包级结论。
 
 ---
 
@@ -108,7 +108,7 @@ ps aux | grep "Chrome.*web" | grep -o '\-\-proxy-server=[^ ]*'
 
 **预期**：`--proxy-server=socks5://127.0.0.1:7891` + DoH 策略禁用 IPv6
 
-**实测**：WebRTC/Chrome 参数和 sing-box `ipv4_only` 配置正确；真实访问 `https://ipv6.icanhazip.com/` 返回 `ERR_CONNECTION_RESET`，未建立 IPv6-only 连接。该结果证明本次未出现 IPv6 直连泄漏，但当前上游代理不能提供可用的 IPv6-only 访问。
+**实测（2026-11-13）**：WebRTC/Chrome 参数和 sing-box `ipv4_only` 配置正确；真实访问 `https://ipv6.icanhazip.com/` 返回 `ERR_CONNECTION_RESET`，未建立 IPv6-only 连接；Web 进程树的 IPv6 外部连接行数为 `0`。该结果证明本次未出现 IPv6 直连泄漏，但当前上游代理不能提供可用的 IPv6-only 访问。
 
 ### AT-15：GeoIP gate 与首屏覆盖 ✅
 
@@ -128,7 +128,7 @@ ps aux | grep "Chrome.*web" | grep -o '\-\-proxy-server=[^ ]*'
 
 ### AT-13：WebRTC 非代理 UDP ✅
 
-**实测**：通过 CDP 创建 ICE offer，只产生本地 mDNS `host` 候选，没有 `srflx`/`relay` 公网候选。
+**实测（2026-11-13）**：通过 CDP 创建 ICE offer，ICE gathering 完成后只产生本地 mDNS `.local` `host` 候选；`publicCandidates=[]`，没有 `srflx`/`relay` 公网候选。
 
 ### AT-14：PF fail-closed 断开/恢复 ✅
 
