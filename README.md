@@ -130,6 +130,8 @@ Web 出口泄漏的判定方法、现场命令和证据边界见 [`docs/web-leak
 
 首次保存代理密码时，macOS 可能要求授权 `com.cim.proxy`。选择“始终允许”可以记住这次授权；后续守护进程会优先读取权限为 0600 的 `~/.cim/sing-box/config.json`，不再因 launchd 重启或普通代码更新重复访问钥匙串。更新代码使用 `./scripts/restart-daemon.sh`，不需要重复运行 `install.sh`。
 
+安装和重启脚本会复用 `~/.cim/codesign-identity` 中的本机签名身份，并用固定的 `com.cim.daemon` 标识签名；首次切换到固定签名时需要在“App 管理”里确认一次，之后普通重编译不会被当成新应用。
+
 ## 出口 IP 默认环境
 
 守护进程通过 SOCKS5 网关获取真实出口 IP，并经 GeoIP 查询得到国家、城市、

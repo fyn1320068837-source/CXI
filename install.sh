@@ -60,6 +60,12 @@ else
 fi
 echo ""
 
+# ── 固定 macOS 签名 ──────────────────────
+"${CIM_SOURCE_DIR}/scripts/sign-macos-binaries.sh" \
+    "${CIM_SOURCE_DIR}/target/release/cim" \
+    "${CIM_SOURCE_DIR}/target/release/cim-instance-launch"
+echo ""
+
 # ── 安装二进制 ───────────────────────────
 echo "▸ 安装二进制..."
 mkdir -p "${HOME}/.cim/bin"
@@ -181,7 +187,7 @@ echo ""
 
 # ── 等待守护进程就绪 ─────────────────────
 echo "▸ 等待守护进程就绪..."
-for i in $(seq 1 10); do
+for i in $(seq 1 30); do
     if curl -s http://localhost:8080/health &>/dev/null; then
         echo "  http://localhost:8080 ✓"
         break
