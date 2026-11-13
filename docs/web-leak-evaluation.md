@@ -49,7 +49,7 @@ tail -f ~/.cim/logs/daemon.log
 
 - WebRTC：通过 CDP 在真实 Web 实例中创建 ICE offer，ICE gathering 完成后只有本地 mDNS `.local` `host` 候选；`publicCandidates=[]`，没有 `srflx`/`relay` 公网候选。
 - IPv6-only：访问 `https://ipv6.icanhazip.com/` 返回 `ERR_CONNECTION_RESET`，未建立 IPv6-only 页面连接；同一 Web 进程树没有 IPv6 外部连接（`ipv6_external_rows=0`）。该结果证明本次没有绕过代理形成 IPv6 直连，但也说明当前上游链路不能把 IPv6-only 目标作为可用路径，不能标记为“IPv6 访问通过”。
-- DNS：真实 Web 实例访问随机探测域名后，递归 `lsof` 未发现 Web 进程树的 UDP/53（`udp53=0`）。这支持“实例没有直接发明文 DNS”的判断；由于当前 sudoers 未授权非交互 `tcpdump`，仍缺少系统级包捕获证据，不能外推为全机 DNS 结论。
+- DNS：真实 Web 实例访问唯一随机探测域名 `cim-dns-cim-web-1794583085-32039.invalid` 后，递归 `lsof` 未发现 Web 进程树的 UDP/53（`udp53=0`），外部连接仍指向 `127.0.0.1:7891`。一次 root `tcpdump -i en0` 的 60 秒窗口捕获了 10 个 UDP/53 包，但没有该唯一探测域名；捕获内容是 `localhost.pan.baidu.com`、`sentry.io` 和 PTR 等主机其他应用查询。因此 Web 实例的包级 DNS 直连未观察到，但主机级仍存在其他应用明文 DNS，不能把结果扩大为整机无泄漏。
 - 代理断开：停止 sing-box 后 `/api/status` 进入 `proxy healthy=false`、`firewall.mode=blocked`；通过实例隔离 helper 对 `1.1.1.1:443` 的无代理访问在 1 秒后超时（curl exit 28）。
 - 代理恢复：调用 `/api/proxy/restart` 后自动回到 `proxy healthy=true`、`firewall.mode=allowed`；出口为 `48.44.59.210`，GeoIP 为 US/New York/`America/New_York`，`/api/validation/web` 恢复为 `pass` 且 `direct=0`。
 - 代理测试接口恢复后返回 `healthy=true`，本次测得延迟约 2944 ms；该延迟偏高，应作为上游代理质量问题单独跟踪。
@@ -57,4 +57,4 @@ tail -f ~/.cim/logs/daemon.log
 
 ## 证据边界
 
-这是进程树的采样窗口，不是对主机所有应用的全局抓包保证。Web 以外的应用、浏览器崩溃后脱离用户数据目录的孤儿进程，以及未取得 root 抓包权限时的系统级 UDP/DNS 证据需要单独评估。本次 tcpdump 未能执行：非 root 抓包被 macOS 拒绝，`sudo -n tcpdump` 需要交互式密码；没有在聊天中索取或记录密码。要补齐包级证据，需要用户在本机授权一次抓包命令后重跑。首次导航、刷新、新标签页、DNS 探测、WebRTC、IPv6-only 和代理断开/恢复均已取得本次验收样本。
+这是进程树的采样窗口，不是对主机所有应用的全局抓包保证。Web 以外的应用、浏览器崩溃后脱离用户数据目录的孤儿进程仍可能产生自己的 DNS。2026-11-13 已在管理员授权下对 `en0` 做 60 秒 root `tcpdump`：捕获 10 个 UDP/53 包，均为其他主机应用的域名/PTR 查询；CIM Web 的唯一随机探测域名未出现，且 Web 进程树没有 UDP/53。首次导航、刷新、新标签页、DNS 探测、WebRTC、IPv6-only 和代理断开/恢复均已取得本次验收样本；整机级 DNS 仍需按应用分别治理。

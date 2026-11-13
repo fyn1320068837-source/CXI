@@ -83,7 +83,7 @@
 - 2026-11-12 真实 Web 复测：`checked 11 pids; proxied=14, local=18, direct=0`，递归 lsof 未发现 UDP 53，公网连接未出现在 Web 进程树；生成的 sing-box 配置通过 `sing-box check`，真实代理脚本新增 WebRTC/QUIC、DNS UDP 和历史证据断言。
 - 2026-11-12 最终验收：CDP WebRTC ICE 仅产生本地 mDNS host 候选，无公网 `srflx/relay` 候选；IPv6-only 站点返回 `ERR_CONNECTION_RESET`，未形成 IPv6 直连但当前上游不支持该访问路径。
 - 2026-11-12 代理断开恢复：停止 sing-box 后状态进入 `proxy healthy=false`、`firewall.mode=blocked`，实例 helper 的无代理 `1.1.1.1:443` 请求以 curl 28 超时；重启代理后自动恢复 `healthy=true`、`firewall.mode=allowed`，Web 验证保持 `direct=0`。
-- 包级 tcpdump 尚未完成：本机非 root 抓包被 macOS 拒绝，`sudo -n` 需要交互式密码；进程级 lsof、PF fail-closed 和 WebRTC 已完成，需用户本地授权一次 root 抓包后补齐最后一项。
+- 2026-11-13 已完成 Web 专属 root tcpdump：在 `en0` 上抓包 60 秒捕获 10 个 UDP/53 包，但没有 CIM Web 唯一随机探测域名；Web 进程树 `udp53=0`，外部连接仍到 `127.0.0.1:7891`。抓包同时确认主机其他应用仍会访问 `114.114.114.114:53`，因此结论限定为 Web 实例无观察到 DNS 直连，整机仍存在其他应用 DNS。
 - 钥匙串授权已简化：守护进程现在优先读取权限为 0600 的现有 sing-box 配置，只有首次迁移或配置缺密码时才调用 `security`；普通 launchd 重启和 release 更新不再重复触发 `com.cim.proxy` 弹窗。
 - App 管理授权已改为固定签名流程：安装和重启脚本复用本机签名身份，并用固定 `com.cim.daemon` identifier 签名，避免 ad-hoc cdhash 随每次编译变化。首次切换到新签名需在 macOS 设置中确认一次。
 - P0/P1 Web 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏。

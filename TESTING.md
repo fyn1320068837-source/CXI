@@ -78,7 +78,7 @@ tail -f ~/.cim/logs/daemon.log | grep "auth\|fail\|closed"
 
 ---
 
-### AT-04：DNS 泄漏 ⚠️（进程级通过，包级待 root 抓包）
+### AT-04：DNS 泄漏 ⚠️（Web 专属包级通过，主机存在其他应用 DNS）
 
 **目标**：无明文 DNS 查询从实例进程发出
 
@@ -91,7 +91,7 @@ cat ~/.cim/sing-box/config.json | grep -A3 '"dns"'
 
 **预期**：`strategy: "ipv4_only"`，DNS 服务器通过 upstream 出站
 
-**实测（2026-11-13）**：在真实 Web 实例中访问随机 DNS 探测域名，并递归检查 Web 进程树；`lsof` 未发现 UDP/53 连接（`udp53=0`）。DNS 由 sing-box 的 DoH 出站处理，未观察到实例直连 DNS。系统级 `tcpdump` 仍需要 root 抓包权限，当前 sudoers 未授权非交互执行 `tcpdump`，因此这里保留“包级待 root 抓包”状态，不把进程级结果扩大为全机包级结论。
+**实测（2026-11-13）**：在真实 Web 实例中访问唯一随机探测域名 `cim-dns-cim-web-1794583085-32039.invalid`，递归 `lsof` 未发现 Web 进程树的 UDP/53（`udp53=0`），Web 外部连接仍指向 `127.0.0.1:7891`。经一次 root `tcpdump` 在 `en0` 上抓包 60 秒，共捕获 10 个 UDP/53 包，但没有出现该唯一探测域名；抓到的 `localhost.pan.baidu.com`、`sentry.io` 和 PTR 查询属于主机其他应用，不能归因给 CIM Web。结论限定为“Web 实例包级未观察到 DNS 直连”；主机级仍存在其他应用的明文 DNS，不能标记为整机 DNS 无泄漏。
 
 ---
 
@@ -292,7 +292,7 @@ $ sqlite3 ~/.cim/cim.db "SELECT id, kind, status FROM instance_state ORDER BY id
 | AT-01 四实例共享出口 | 自动 | ✅ |
 | AT-02 代理被杀 | 自动 | ✅ |
 | AT-03 认证失败 | 自动 | 🔄 需真实代理 |
-| AT-04 DNS 泄漏 | 自动 | ⚠️ 进程级通过，包级 tcpdump 待 root |
+| AT-04 DNS 泄漏 | 自动 | ⚠️ Web 包级通过，主机其他应用有 DNS |
 | AT-05 IPv6 绕行 | 自动 | ⚠️ 无直连，但 IPv6-only 访问受限 |
 | AT-06 Wi-Fi 切换 | 手动 | ⬜ |
 | AT-07 睡眠唤醒 | 手动 | ⬜ |
@@ -310,7 +310,7 @@ $ sqlite3 ~/.cim/cim.db "SELECT id, kind, status FROM instance_state ORDER BY id
 | AT-17 请求日志保护 | 真实 Web | ✅ |
 | AT-18 Web 安全聚合结论 | 真实 API/UI | ✅ |
 
-**发布条件**：AT-01~02、AT-08~18 已完成；AT-03 认证失败场景尚未单独执行，AT-04 仍缺 root tcpdump 包级证据，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
+**发布条件**：AT-01~02、AT-08~18 已完成；AT-03 认证失败场景尚未单独执行，AT-04 已完成 Web 专属 root tcpdump 验证但主机其他应用仍产生明文 DNS，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
 
 ---
 
