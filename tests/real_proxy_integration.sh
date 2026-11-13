@@ -111,6 +111,18 @@ assert latest["status"] == "pass", latest
 assert latest["direct_count"] == 0, latest
 assert latest["proxied_count"] > 0, latest
 PY
+  if [[ "$kind" == "web" ]]; then
+    security="$(curl_json "$BASE_URL/api/security/web")"
+    python3 - "$security" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload.get("success"), payload
+assert payload.get("verdict") == "PASS", payload
+assert payload.get("web", {}).get("direct") == 0, payload
+assert payload.get("checks", {}).get("direct_zero"), payload
+assert payload.get("checks", {}).get("validation_pass"), payload
+PY
+  fi
   curl_json -X POST "$BASE_URL/api/instances/$kind/stop" >/dev/null
 done
 

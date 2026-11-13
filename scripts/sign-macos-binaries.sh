@@ -18,9 +18,17 @@ if [[ -z "$identity" && -f "$IDENTITY_FILE" ]]; then
     identity="$(sed -n '1p' "$IDENTITY_FILE")"
 fi
 
-if [[ -z "$identity" ]]; then
-    identity="$(security find-identity -v -p codesigning 2>/dev/null \
-        | awk '/Apple Development:/ && $0 !~ /CSSMERR/ { print $2; exit }')"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    # `security find-identity` exits non-zero when the login keychain has no
+    # usable identity. Keep that case on the ad-hoc fallback path instead of
+    # aborting the daemon restart under `set -e`.
+    available_identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+    if [[ -n "$identity" ]] && ! grep -Fq "$identity" <<<"$available_identities"; then
+        identity=""
+    fi
+    if [[ -z "$identity" ]]; then
+        identity="$(awk '/Apple Development:/ && $0 !~ /CSSMERR/ { print $2; exit }' <<<"$available_identities")"
+    fi
     if [[ -n "$identity" ]]; then
         mkdir -p "${HOME}/.cim"
         printf '%s\n' "$identity" > "$IDENTITY_FILE"

@@ -122,6 +122,10 @@ ps aux | grep "Chrome.*web" | grep -o '\-\-proxy-server=[^ ]*'
 
 **实测**：`/api/logs?limit=10` 返回 `retention_minutes=30` 和 `outcome` 字段；Cloudflare 高熵路径段显示为 `[redacted]`，查询参数和 fragment 不进入日志。
 
+### AT-18：Web 安全聚合结论 ✅
+
+**实测**：Web 运行且最新验证为 `pass` 时，`GET /api/security/web` 返回 `verdict=PASS`、`direct=0`、代理/本地计数、检查年龄和 PF 状态；Web 停止或证据过期时返回 `UNKNOWN`，不会复用旧样本误报安全。
+
 ### AT-13：WebRTC 非代理 UDP ✅
 
 **实测**：通过 CDP 创建 ICE offer，只产生本地 mDNS `host` 候选，没有 `srflx`/`relay` 公网候选。
@@ -304,8 +308,9 @@ $ sqlite3 ~/.cim/cim.db "SELECT id, kind, status FROM instance_state ORDER BY id
 | AT-15 GeoIP gate 与首屏覆盖 | 真实 Web | ✅ |
 | AT-16 新标签页与 CDP 断线恢复 | 真实 Web | ✅ |
 | AT-17 请求日志保护 | 真实 Web | ✅ |
+| AT-18 Web 安全聚合结论 | 真实 API/UI | ✅ |
 
-**发布条件**：AT-01~02、AT-08~17 已完成；AT-03 认证失败场景尚未单独执行，AT-04 仍缺 root tcpdump 包级证据，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
+**发布条件**：AT-01~02、AT-08~18 已完成；AT-03 认证失败场景尚未单独执行，AT-04 仍缺 root tcpdump 包级证据，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
 
 ---
 

@@ -105,6 +105,7 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 ```
 GET  /health                            健康检查
 GET  /api/status                        全局状态（代理、GeoIP、四实例、防火墙）
+GET  /api/security/web                  Web 安全聚合结论（PASS/FAIL/BLOCKED/UNKNOWN）
 GET  /api/logs?limit=                   当前请求日志（30分钟/最多2000条）
 DELETE /api/logs                        清空当前请求日志
 GET  /api/validation/{kind}             最近的进程级连接验证证据

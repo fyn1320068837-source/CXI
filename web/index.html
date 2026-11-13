@@ -339,6 +339,38 @@
 <main>
     <!-- ══ 服务状态 ══ -->
     <div id="sec-status">
+    <!-- ── Web 安全结论 ── -->
+    <section>
+        <h2>Web 安全结论</h2>
+        <div class="card" id="web-security-card">
+            <div class="proxy-row">
+                <span class="lbl">结论</span>
+                <span id="security-verdict"><span class="badge badge-grey">检测中…</span></span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">最近检查</span>
+                <span class="val" id="security-age">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">连接证据</span>
+                <span class="val" id="security-connections">代理 — · 本地 — · 直连 — · 进程 —</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">代理 / PF</span>
+                <span class="val" id="security-network">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">其他检查</span>
+                <span class="val" id="security-checks">—</span>
+            </div>
+            <div id="security-reasons" style="margin-top:.65rem;color:var(--muted);font-size:.78rem">—</div>
+            <div id="security-limitations" style="margin-top:.45rem;color:var(--muted);font-size:.72rem">—</div>
+            <div style="margin-top:.45rem;color:var(--muted);font-size:.72rem">
+                结论基于 Web 进程树观测；请求 URL 日志只表示访问目标，不代表直连。
+            </div>
+        </div>
+    </section>
+
     <!-- ── 代理状态 ── -->
     <section>
         <h2>代理状态</h2>
@@ -726,6 +758,36 @@ async function pollLogs() {
     } catch {}
 }
 
+function renderSecurity(s) {
+    const verdict = s.verdict || 'UNKNOWN';
+    const classes = { PASS: 'pass', FAIL: 'fail', BLOCKED: 'warn', UNKNOWN: 'warn' };
+    const badgeText = s.label || verdict;
+    document.getElementById('security-verdict').innerHTML = badge(classes[verdict] || 'grey', badgeText);
+    const age = s.age_seconds == null ? '无新鲜样本' : `${s.age_seconds}s 前（有效期 ${s.evidence_ttl_seconds || 90}s）`;
+    document.getElementById('security-age').textContent = age;
+    const web = s.web || {};
+    document.getElementById('security-connections').textContent =
+        `代理 ${web.proxied ?? '—'} · 本地 ${web.local ?? '—'} · 直连 ${web.direct ?? '—'} · 进程 ${web.checked_pids ?? '—'}`;
+    document.getElementById('security-network').textContent =
+        `${s.proxy?.healthy ? '代理正常' : '代理异常'} · GeoIP ${s.proxy?.geo_ready ? '就绪' : '未就绪'} · PF ${s.firewall?.mode || '—'}`;
+    const checks = s.checks || {};
+    document.getElementById('security-checks').textContent =
+        `UDP53 ${checks.udp53 === 'not_sampled' ? '未持续采样' : checks.udp53} · WebRTC ${checks.webrtc_public_candidates === 'not_sampled' ? '未持续采样' : checks.webrtc_public_candidates} · IPv6 ${checks.ipv6_direct === 'not_sampled' ? '未持续采样' : checks.ipv6_direct}`;
+    const reasons = s.reasons || [];
+    document.getElementById('security-reasons').textContent = reasons.length ? `状态：${reasons.join('；')}` : '状态：未发现直连证据';
+    const limitations = s.limitations || [];
+    document.getElementById('security-limitations').textContent = limitations.length ? `限制：${limitations.join('；')}` : '';
+}
+
+async function pollSecurity() {
+    try {
+        const r = await fetch('/api/security/web');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d.success) renderSecurity(d);
+    } catch {}
+}
+
 // ── WebSocket ──────────────────────────────────────────────
 let ws = null;
 let reconnectTimer = null;
@@ -738,6 +800,7 @@ function connectWS() {
         clearTimeout(reconnectTimer);
         poll(); // 立即拉一次完整状态
         pollLogs();
+        pollSecurity();
     };
 
     ws.onmessage = ({ data }) => {
@@ -775,11 +838,13 @@ async function poll() {
         if (!r.ok) return;
         const d = await r.json();
         applyStatus(d);
+        pollSecurity();
     } catch {}
 }
 
 setInterval(poll, 10000);
 setInterval(pollLogs, 5000);
+setInterval(pollSecurity, 10000);
 
 // ── 状态渲染 ───────────────────────────────────────────────
 function applyStatus(d) {
