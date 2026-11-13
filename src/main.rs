@@ -101,8 +101,17 @@ async fn run_daemon() -> Result<()> {
         match proxy_manager.refresh_geo_profile().await {
             Ok(_) => proxy_manager.mark_healthy(),
             Err(error) => {
-                proxy_manager.mark_unhealthy();
                 warn!("Initial GeoIP resolution failed: {}", error);
+                // A working tunnel is still safe to expose as healthy. Web
+                // launch is gated on a ready GeoProfile, while the health
+                // loop keeps retrying GeoIP independently.
+                match proxy_manager.check_exit_ip().await {
+                    Ok(_) => proxy_manager.mark_healthy(),
+                    Err(proxy_error) => {
+                        proxy_manager.mark_unhealthy();
+                        warn!("Initial proxy health check failed: {}", proxy_error);
+                    }
+                }
             }
         }
     }

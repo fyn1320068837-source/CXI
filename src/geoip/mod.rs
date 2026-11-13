@@ -65,7 +65,34 @@ impl GeoProfile {
     }
 
     pub fn has_geo(&self) -> bool {
-        self.country.is_some() || self.city.is_some() || self.timezone.is_some()
+        self.country
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            || self.city.as_deref().is_some_and(|value| !value.is_empty())
+            || self
+                .timezone
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+    }
+
+    /// Whether the profile contains the runtime values needed before a Web
+    /// instance may navigate to Claude. A source IP alone only proves that
+    /// the proxy tunnel answered; it does not prove that GeoIP returned a
+    /// usable timezone and locale.
+    pub fn is_ready(&self) -> bool {
+        self.is_resolved()
+            && self
+                .timezone
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .language
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .locale
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
     }
 }
 
@@ -217,5 +244,18 @@ mod tests {
         assert_eq!(profile.language.as_deref(), Some("zh-CN"));
         assert_eq!(profile.locale.as_deref(), Some("zh_CN.UTF-8"));
         assert_eq!(profile.timezone.as_deref(), Some("Asia/Shanghai"));
+        assert!(profile.is_ready());
+    }
+
+    #[test]
+    fn source_ip_without_geo_is_not_ready_for_web() {
+        let profile = GeoProfile {
+            source_ip: Some("203.0.113.10".to_string()),
+            ..GeoProfile::default()
+        };
+
+        assert!(profile.is_resolved());
+        assert!(!profile.has_geo());
+        assert!(!profile.is_ready());
     }
 }

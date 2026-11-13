@@ -548,12 +548,13 @@
                             <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">方法</th>
                             <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">URL</th>
                             <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">状态</th>
+                            <th style="text-align:left;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase">结果</th>
                             <th style="text-align:right;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap">延迟</th>
                             <th style="text-align:right;padding:6px 10px;color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap">大小</th>
                         </tr>
                     </thead>
                     <tbody id="log-tbody">
-                        <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted);font-family:sans-serif;font-size:13px">
+                        <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted);font-family:sans-serif;font-size:13px">
                             暂无日志<br><span style="font-size:11px;display:block;margin-top:4px">启动实例后，网络请求将在此处实时显示</span>
                         </td></tr>
                     </tbody>
@@ -664,7 +665,7 @@ function renderLogs() {
 
     const tbody = document.getElementById('log-tbody');
     if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted);font-family:sans-serif;font-size:13px">暂无匹配记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted);font-family:sans-serif;font-size:13px">暂无匹配记录</td></tr>';
         return;
     }
 
@@ -673,12 +674,14 @@ function renderLogs() {
         const lat = l.latency_ms < 1000 ? l.latency_ms + 'ms' : (l.latency_ms/1000).toFixed(1) + 's';
         const sz  = l.size_bytes > 0 ? (l.size_bytes < 1024 ? l.size_bytes + 'B' : (l.size_bytes/1024).toFixed(1) + 'KB') : '—';
         const inst = {code:'A',desktop:'B',vscode:'C',web:'D'}[l.instance] || l.instance;
+        const outcome = l.error || l.outcome || '—';
         return `<tr style="border-bottom:1px solid var(--border)">
             <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${l.timestamp}</td>
             <td style="padding:7px 10px"><span class="badge badge-grey">${inst}</span></td>
             <td style="padding:7px 10px;color:var(--accent);font-weight:600">${l.method}</td>
             <td style="padding:7px 10px;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(l.url || '')}">${escapeHtml(l.url || '')}</td>
             <td style="padding:7px 10px"><span class="badge badge-${sc}">${l.status || 'ERR'}</span></td>
+            <td style="padding:7px 10px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(outcome)}">${escapeHtml(outcome)}</td>
             <td style="padding:7px 10px;text-align:right;color:var(--muted)">${lat}</td>
             <td style="padding:7px 10px;text-align:right;color:var(--muted)">${sz}</td>
         </tr>`;
@@ -788,7 +791,7 @@ function applyStatus(d) {
 function renderProxy(p) {
     const statusEl = document.getElementById('proxy-status');
     if (p.healthy) {
-        statusEl.innerHTML = badge('pass', '正常');
+        statusEl.innerHTML = badge('pass', p.geo_ready === false ? '代理正常 · 等待位置' : '正常');
         hideBanner();
     } else {
         statusEl.innerHTML = badge('fail', '故障');

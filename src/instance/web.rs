@@ -10,6 +10,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::TcpListener;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -83,6 +84,13 @@ impl InstanceAdapter for WebAdapter {
         let session_dir = format!("{}/sessions/{}", self.user_data_dir, Uuid::new_v4());
         std::fs::create_dir_all(&session_dir)?;
 
+        if !profile.is_ready() {
+            let _ = std::fs::remove_dir_all(&session_dir);
+            anyhow::bail!(
+                "GeoIP profile is not ready; refusing to navigate Web with host locale/timezone"
+            );
+        }
+
         let mut args = vec![
             format!("--user-data-dir={}", session_dir),
             "--proxy-server=socks5://127.0.0.1:7891".to_string(),
@@ -106,11 +114,7 @@ impl InstanceAdapter for WebAdapter {
         // geolocation and Accept-Language overrides. Otherwise the first
         // document is fetched with the host locale and only a later refresh
         // reflects the proxy's GeoIP profile.
-        args.push(if profile.is_resolved() {
-            "about:blank".to_string()
-        } else {
-            "https://claude.ai".to_string()
-        });
+        args.push("about:blank".to_string());
 
         let mut command = isolated_command(&browser_path);
         command.args(&args);
@@ -124,7 +128,7 @@ impl InstanceAdapter for WebAdapter {
         };
         let root_pid = child.id();
 
-        if profile.is_resolved() {
+        if profile.is_ready() {
             let capture_requests = self.request_log_tx.is_some();
             let browser_session =
                 match apply_browser_profile(debug_port, &profile, capture_requests).await {
@@ -436,6 +440,54 @@ struct PendingRequest {
     status: u16,
 }
 
+const MAX_PENDING_REQUESTS: usize = 2_048;
+const PENDING_REQUEST_TTL: Duration = Duration::from_secs(60);
+
+/// Keep a stalled DevTools request from growing memory without allowing log
+/// backpressure to interfere with browser networking.
+fn prune_pending<K: Eq + Hash + Clone>(pending: &mut HashMap<K, PendingRequest>) {
+    let now = Instant::now();
+    pending.retain(|_, request| now.duration_since(request.started_at) <= PENDING_REQUEST_TTL);
+    while pending.len() > MAX_PENDING_REQUESTS {
+        let oldest = pending
+            .iter()
+            .min_by_key(|(_, request)| request.started_at)
+            .map(|(key, _)| key.clone());
+        if let Some(key) = oldest {
+            pending.remove(&key);
+        } else {
+            break;
+        }
+    }
+}
+
+fn network_failure_reason(params: &serde_json::Value) -> Option<String> {
+    params
+        .get("errorText")
+        .and_then(|value| value.as_str())
+        .or_else(|| params.get("blockedReason").and_then(|value| value.as_str()))
+        .or_else(|| {
+            params
+                .get("canceled")
+                .and_then(|value| value.as_bool())
+                .filter(|v| *v)
+                .map(|_| "canceled")
+        })
+        .map(str::to_string)
+}
+
+fn request_outcome(status: u16, failed: bool) -> String {
+    if failed {
+        "network_error".to_string()
+    } else if status >= 400 {
+        "http_error".to_string()
+    } else if status == 0 {
+        "no_response".to_string()
+    } else {
+        "success".to_string()
+    }
+}
+
 /// Observe Chromium's Network domain and publish completed requests to the
 /// dashboard. The monitor is tied to the browser root PID and exits when the
 /// isolated browser is closed.
@@ -489,6 +541,39 @@ async fn monitor_browser_requests(port: u16, root_pid: u32, sender: RequestLogSe
 /// target, so the initial page connection is not enough when the user opens a
 /// second page in the same isolated browser window.
 async fn monitor_browser_targets(
+    port: u16,
+    root_pid: u32,
+    profile: GeoProfile,
+    initial_target_id: Option<String>,
+    sender: Option<RequestLogSender>,
+) {
+    let mut backoff = Duration::from_millis(250);
+    loop {
+        if !process_exists(root_pid) {
+            break;
+        }
+        monitor_browser_targets_once(
+            port,
+            root_pid,
+            profile.clone(),
+            initial_target_id.clone(),
+            sender.clone(),
+        )
+        .await;
+        if !process_exists(root_pid) {
+            break;
+        }
+        tracing::warn!(
+            port,
+            retry_in_ms = backoff.as_millis() as u64,
+            "Chrome DevTools target monitor disconnected; retrying"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(5));
+    }
+}
+
+async fn monitor_browser_targets_once(
     port: u16,
     root_pid: u32,
     profile: GeoProfile,
@@ -748,6 +833,7 @@ async fn record_network_event(
     pending: &mut HashMap<(String, String), PendingRequest>,
     sender: &RequestLogSender,
 ) {
+    prune_pending(pending);
     let Some(request_id) = params.get("requestId").and_then(|value| value.as_str()) else {
         return;
     };
@@ -761,6 +847,10 @@ async fn record_network_event(
             if url.starts_with("data:") || url.starts_with("blob:") {
                 return;
             }
+            let sanitized_url = sanitize_request_url(url);
+            if sanitized_url.is_empty() {
+                return;
+            }
             pending.insert(
                 key,
                 PendingRequest {
@@ -770,7 +860,7 @@ async fn record_network_event(
                         .and_then(|value| value.as_str())
                         .unwrap_or("GET")
                         .to_string(),
-                    url: sanitize_request_url(url),
+                    url: sanitized_url,
                     status: 0,
                 },
             );
@@ -788,6 +878,11 @@ async fn record_network_event(
         "Network.loadingFinished" | "Network.loadingFailed" => {
             if let Some(request) = pending.remove(&key) {
                 let failed = method == "Network.loadingFailed";
+                let error = if failed {
+                    network_failure_reason(&params)
+                } else {
+                    None
+                };
                 let entry = RequestLogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     instance: "web".to_string(),
@@ -803,8 +898,12 @@ async fn record_network_event(
                             .and_then(|value| value.as_u64())
                             .unwrap_or(0)
                     },
+                    outcome: request_outcome(request.status, failed),
+                    error,
                 };
-                let _ = sender.send(entry).await;
+                if sender.try_send(entry).is_err() {
+                    tracing::warn!("Dropping Web request log because the log buffer is full");
+                }
             }
         }
         _ => {}
@@ -821,6 +920,8 @@ async fn monitor_browser_socket(
         if !process_exists(root_pid) {
             break;
         }
+
+        prune_pending(&mut pending);
 
         let message = match tokio::time::timeout(Duration::from_secs(2), socket.next()).await {
             Ok(Some(Ok(message))) => message,
@@ -851,6 +952,10 @@ async fn monitor_browser_socket(
                 if url.starts_with("data:") || url.starts_with("blob:") {
                     continue;
                 }
+                let sanitized_url = sanitize_request_url(url);
+                if sanitized_url.is_empty() {
+                    continue;
+                }
                 pending.insert(
                     request_id.to_string(),
                     PendingRequest {
@@ -860,7 +965,7 @@ async fn monitor_browser_socket(
                             .and_then(|value| value.as_str())
                             .unwrap_or("GET")
                             .to_string(),
-                        url: sanitize_request_url(url),
+                        url: sanitized_url,
                         status: 0,
                     },
                 );
@@ -896,9 +1001,17 @@ async fn monitor_browser_socket(
                             .get("encodedDataLength")
                             .and_then(|value| value.as_u64())
                             .unwrap_or(0),
+                        outcome: request_outcome(request.status, false),
+                        error: None,
                     };
-                    if sender.send(entry).await.is_err() {
-                        break;
+                    match sender.try_send(entry) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::warn!(
+                                "Dropping Web request log because the log buffer is full"
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                     }
                 }
             }
@@ -908,6 +1021,7 @@ async fn monitor_browser_socket(
                     continue;
                 };
                 if let Some(request) = pending.remove(request_id) {
+                    let error = network_failure_reason(&params);
                     let entry = RequestLogEntry {
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         instance: "web".to_string(),
@@ -916,9 +1030,17 @@ async fn monitor_browser_socket(
                         status: 0,
                         latency_ms: request.started_at.elapsed().as_millis() as u64,
                         size_bytes: 0,
+                        outcome: request_outcome(request.status, true),
+                        error,
                     };
-                    if sender.send(entry).await.is_err() {
-                        break;
+                    match sender.try_send(entry) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::warn!(
+                                "Dropping Web request log because the log buffer is full"
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                     }
                 }
             }
@@ -928,9 +1050,47 @@ async fn monitor_browser_socket(
 }
 
 fn sanitize_request_url(url: &str) -> String {
-    url.split_once('?')
-        .map(|(base, _)| format!("{}?…", base))
-        .unwrap_or_else(|| url.to_string())
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return String::new();
+    };
+    if !matches!(scheme, "http" | "https" | "ws" | "wss") {
+        return String::new();
+    }
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority = rest[..authority_end]
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(&rest[..authority_end]);
+    let path_and_query = &rest[authority_end..];
+    let path = path_and_query.split(['?', '#']).next().unwrap_or_default();
+    let sensitive = ["/auth", "/login", "/oauth", "/token", "/session"]
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")));
+    let safe_path = if sensitive {
+        "/[redacted]".to_string()
+    } else {
+        let redacted_path = path
+            .split('/')
+            .map(|segment| {
+                let compact_len = segment
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .count();
+                if segment.len() > 48 || compact_len > 24 {
+                    "[redacted]"
+                } else {
+                    segment
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        if redacted_path.len() > 180 {
+            format!("{}…", &redacted_path[..180])
+        } else {
+            redacted_path
+        }
+    };
+    format!("{scheme}://{authority}{safe_path}")
 }
 
 fn language_override_script(language: &str) -> String {
@@ -1033,12 +1193,23 @@ mod tests {
     fn request_log_urls_drop_query_values() {
         assert_eq!(
             sanitize_request_url("https://claude.ai/api/messages?token=secret"),
-            "https://claude.ai/api/messages?…"
+            "https://claude.ai/api/messages"
         );
         assert_eq!(
             sanitize_request_url("https://claude.ai/login"),
-            "https://claude.ai/login"
+            "https://claude.ai/[redacted]"
         );
+        assert_eq!(
+            sanitize_request_url("https://user:secret@claude.ai/api/messages?token=secret#x"),
+            "https://claude.ai/api/messages"
+        );
+        assert_eq!(
+            sanitize_request_url(
+                "https://claude.ai/cdn-cgi/challenge-platform/h/g/fo/630164355:1794546913:IV11Q8FZaCUGOkdXEY6HJV7-o7ppiJJ-DpJt1-Wmytc/a"
+            ),
+            "https://claude.ai/cdn-cgi/challenge-platform/h/g/fo/[redacted]/a"
+        );
+        assert_eq!(sanitize_request_url("file:///tmp/secret"), "");
     }
 
     #[test]

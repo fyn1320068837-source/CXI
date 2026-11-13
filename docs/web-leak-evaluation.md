@@ -13,6 +13,8 @@ Web 请求日志和出口泄漏是两类证据。`/api/logs` 记录浏览器访�
 
 `unknown` 表示实例停止或采样时没有活动连接，不能当作安全结论；`fail` 表示发现直连或 lsof 检查失败；Desktop 的 `unsupported` 仍然不受这套自动覆盖保护。
 
+代理隧道健康和 GeoIP 状态现在分开返回：`proxy.healthy` 只表示本地 SOCKS 隧道和出口探测正常，`proxy.geo_ready`/`proxy.geo_status` 表示 Web 所需的时区、语言和位置资料是否就绪。Web 启动会在 GeoIP 未就绪时拒绝导航，避免回退到主机语言和时区。
+
 ## 现场检查
 
 ```bash
@@ -31,6 +33,7 @@ tail -f ~/.cim/logs/daemon.log
 - Chrome 配置了 host resolver 规则并保留本地回环例外；现场递归 lsof 未观察到 Web 进程的 UDP 53。Chrome 仍会显示该参数的“不受支持”提示，最终判断以进程快照和抓包证据为准。
 - `--disable-quic` 禁止 HTTP/3 走独立 UDP 路径。
 - `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 禁止 WebRTC 使用非代理 UDP。
+- CDP 目标监控会在连接断开后以退避方式重连，并继续接管新标签页和弹窗。
 - sing-box 使用 `https://1.1.1.1/dns-query`，`ipv4_only`，并通过 `upstream` SOCKS 出站访问。
 - Web 进程由 `cim-instance-launch` 加入 `cimgrp`，代理失效时由 PF fail-closed 规则阻断直连。
 
@@ -47,6 +50,7 @@ tail -f ~/.cim/logs/daemon.log
 - 代理断开：停止 sing-box 后 `/api/status` 进入 `proxy healthy=false`、`firewall.mode=blocked`；通过实例隔离 helper 对 `1.1.1.1:443` 的无代理访问在 1 秒后超时（curl exit 28）。
 - 代理恢复：调用 `/api/proxy/restart` 后自动回到 `proxy healthy=true`、`firewall.mode=allowed`；出口为 `48.44.59.210`，GeoIP 为 US/New York/`America/New_York`，`/api/validation/web` 恢复为 `pass` 且 `direct=0`。
 - 代理测试接口恢复后返回 `healthy=true`，本次测得延迟约 2944 ms；该延迟偏高，应作为上游代理质量问题单独跟踪。
+- 请求日志保留 30 分钟、最多 2000 条；网络失败会记录结果分类和失败原因，URL 会去除查询参数、fragment、userinfo 以及高熵路径段，日志通道满时丢弃日志而不阻塞浏览器网络。
 
 ## 证据边界
 

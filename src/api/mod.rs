@@ -5,10 +5,12 @@ use crate::proxy::ProxyManager;
 use crate::storage::Storage;
 use axum::{
     extract::ws::{WebSocket, WebSocketUpgrade},
+    extract::Query,
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -26,6 +28,19 @@ pub struct AppState {
 }
 
 pub type LogEntry = RequestLogEntry;
+
+const MAX_REQUEST_LOGS: usize = 2_000;
+const REQUEST_LOG_RETENTION: ChronoDuration = ChronoDuration::minutes(30);
+
+fn prune_request_logs(logs: &mut Vec<LogEntry>) {
+    let cutoff = Utc::now() - REQUEST_LOG_RETENTION;
+    logs.retain(|entry| {
+        DateTime::parse_from_rfc3339(&entry.timestamp)
+            .map(|timestamp| timestamp.with_timezone(&Utc) >= cutoff)
+            .unwrap_or(true)
+    });
+    logs.truncate(MAX_REQUEST_LOGS);
+}
 
 pub async fn create_router(
     storage: Arc<Storage>,
@@ -45,8 +60,9 @@ pub async fn create_router(
         while let Some(entry) = request_log_rx.recv().await {
             {
                 let mut logs = log_buffer_task.write().await;
+                prune_request_logs(&mut logs);
                 logs.insert(0, entry.clone());
-                logs.truncate(2_000);
+                prune_request_logs(&mut logs);
             }
             let _ = tx_task.send(
                 serde_json::json!({
@@ -110,6 +126,8 @@ struct StatusResponse {
 #[derive(Serialize)]
 struct ProxyStatus {
     healthy: bool,
+    geo_ready: bool,
+    geo_status: String,
     exit_ip: Option<String>,
     latency_ms: Option<u64>,
     geo: Option<GeoInfo>,
@@ -180,7 +198,19 @@ async fn get_status(
     let validation_map = manager.validation_all().await;
     let geo_profile = state.geo_profile.read().await.clone();
     let firewall = state.proxy_manager.firewall_status();
-    let proxy_healthy = state.proxy_manager.is_healthy() && geo_profile.is_resolved();
+    // Tunnel health and GeoIP readiness are separate signals. The proxy can
+    // carry traffic while the GeoIP provider is temporarily unavailable; Web
+    // launches are gated separately by InstanceManager until the profile is
+    // ready, so a transient GeoIP outage never causes a host-locale fallback.
+    let proxy_healthy = state.proxy_manager.is_healthy();
+    let geo_ready = geo_profile.is_ready();
+    let geo_status = if geo_ready {
+        "ready"
+    } else if geo_profile.source_ip.is_some() {
+        "pending"
+    } else {
+        "unavailable"
+    };
 
     let validation_for = |kind: InstanceKind| {
         validation_map
@@ -275,9 +305,11 @@ async fn get_status(
     Json(StatusResponse {
         proxy: ProxyStatus {
             healthy: proxy_healthy,
+            geo_ready,
+            geo_status: geo_status.to_string(),
             exit_ip: geo_profile.source_ip.clone(),
             latency_ms: None,
-            geo: if proxy_healthy && geo_profile.has_geo() {
+            geo: if geo_profile.has_geo() {
                 Some(geo_info_from_profile(&geo_profile))
             } else {
                 None
@@ -305,8 +337,17 @@ async fn restart_proxy(
             match state.proxy_manager.refresh_geo_profile().await {
                 Ok(_) => state.proxy_manager.mark_healthy(),
                 Err(error) => {
-                    state.proxy_manager.mark_unhealthy();
                     tracing::warn!("GeoIP refresh after proxy restart failed: {}", error);
+                    match state.proxy_manager.check_exit_ip().await {
+                        Ok(_) => state.proxy_manager.mark_healthy(),
+                        Err(proxy_error) => {
+                            state.proxy_manager.mark_unhealthy();
+                            tracing::warn!(
+                                "Proxy health check after restart failed: {}",
+                                proxy_error
+                            );
+                        }
+                    }
                 }
             }
             let _ = state.tx.send(r#"{"type":"proxy_restarted"}"#.to_string());
@@ -553,11 +594,27 @@ async fn test_proxy(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct LogQuery {
+    limit: Option<usize>,
+}
+
 async fn get_logs(
+    Query(query): Query<LogQuery>,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let logs = state.log_buffer.read().await;
-    Json(serde_json::json!({ "logs": *logs }))
+    let limit = query
+        .limit
+        .unwrap_or(MAX_REQUEST_LOGS)
+        .min(MAX_REQUEST_LOGS);
+    let mut logs = state.log_buffer.write().await;
+    prune_request_logs(&mut logs);
+    let entries = logs.iter().take(limit).cloned().collect::<Vec<_>>();
+    Json(serde_json::json!({
+        "logs": entries,
+        "limit": limit,
+        "retention_minutes": REQUEST_LOG_RETENTION.num_minutes(),
+    }))
 }
 
 async fn clear_logs(
@@ -565,6 +622,7 @@ async fn clear_logs(
 ) -> Json<serde_json::Value> {
     let cleared = {
         let mut logs = state.log_buffer.write().await;
+        prune_request_logs(&mut logs);
         let count = logs.len();
         logs.clear();
         count

@@ -3,7 +3,7 @@ use super::{
     CodeAdapter, DesktopAdapter, InstanceAdapter, InstanceKind, ProcessHandle, RequestLogSender,
     ValidationStatus, VsCodeAdapter, WebAdapter,
 };
-use crate::geoip::SharedGeoProfile;
+use crate::geoip::{GeoProfile, SharedGeoProfile};
 use crate::storage::Storage;
 use crate::verifier::{NetworkVerifier, VerificationStatus};
 use anyhow::Result;
@@ -19,6 +19,7 @@ pub struct InstanceManager {
     web: Arc<WebAdapter>,
     storage: Option<Arc<Storage>>,
     verifier: NetworkVerifier,
+    geo_profile: SharedGeoProfile,
 }
 
 impl InstanceManager {
@@ -47,6 +48,7 @@ impl InstanceManager {
             )),
             storage: None,
             verifier: NetworkVerifier::new(),
+            geo_profile,
         }
     }
 
@@ -87,6 +89,20 @@ impl InstanceManager {
         );
         if !capability.installed {
             anyhow::bail!("{} is not installed", format!("{:?}", kind).to_lowercase());
+        }
+
+        // WebAdapter's fallback path opens Claude immediately when no GeoIP
+        // profile is present. Block that path at the manager boundary so a
+        // transient GeoIP outage can never expose a first navigation with the
+        // host's locale/timezone. The proxy tunnel itself remains healthy and
+        // can recover GeoIP independently.
+        if kind == InstanceKind::Web {
+            let profile = self.geo_profile.read().await;
+            if !web_profile_ready(&profile) {
+                anyhow::bail!(
+                    "GeoIP profile is not ready; Web launch is blocked until the exit location is resolved"
+                );
+            }
         }
 
         // Prepare
@@ -300,6 +316,10 @@ impl InstanceManager {
     }
 }
 
+fn web_profile_ready(profile: &GeoProfile) -> bool {
+    profile.is_ready()
+}
+
 pub struct InstanceValidation {
     pub status: ValidationStatus,
     pub details: String,
@@ -313,5 +333,27 @@ impl InstanceValidation {
             details: details.to_string(),
             checked_at: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::web_profile_ready;
+    use crate::geoip::GeoProfile;
+
+    #[test]
+    fn web_launch_requires_runtime_geo_profile() {
+        assert!(!web_profile_ready(&GeoProfile::default()));
+        assert!(!web_profile_ready(&GeoProfile {
+            source_ip: Some("203.0.113.5".to_string()),
+            ..GeoProfile::default()
+        }));
+        assert!(web_profile_ready(&GeoProfile {
+            source_ip: Some("203.0.113.5".to_string()),
+            timezone: Some("America/New_York".to_string()),
+            language: Some("en-US".to_string()),
+            locale: Some("en_US.UTF-8".to_string()),
+            ..GeoProfile::default()
+        }));
     }
 }

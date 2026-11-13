@@ -86,6 +86,7 @@
 - 包级 tcpdump 尚未完成：本机非 root 抓包被 macOS 拒绝，`sudo -n` 需要交互式密码；进程级 lsof、PF fail-closed 和 WebRTC 已完成，需用户本地授权一次 root 抓包后补齐最后一项。
 - 钥匙串授权已简化：守护进程现在优先读取权限为 0600 的现有 sing-box 配置，只有首次迁移或配置缺密码时才调用 `security`；普通 launchd 重启和 release 更新不再重复触发 `com.cim.proxy` 弹窗。
 - App 管理授权已改为固定签名流程：安装和重启脚本复用本机签名身份，并用固定 `com.cim.daemon` identifier 签名，避免 ad-hoc cdhash 随每次编译变化。首次切换到新签名需在 macOS 设置中确认一次。
+- P0/P1 Web 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏。
 
 ---
 

@@ -110,6 +110,18 @@ ps aux | grep "Chrome.*web" | grep -o '\-\-proxy-server=[^ ]*'
 
 **实测**：WebRTC/Chrome 参数和 sing-box `ipv4_only` 配置正确；真实访问 `https://ipv6.icanhazip.com/` 返回 `ERR_CONNECTION_RESET`，未建立 IPv6-only 连接。该结果证明本次未出现 IPv6 直连泄漏，但当前上游代理不能提供可用的 IPv6-only 访问。
 
+### AT-15：GeoIP gate 与首屏覆盖 ✅
+
+**实测**：`/api/status` 分开返回 `proxy.healthy=true`、`geo_ready=true`、`geo_status=ready`；Web 启动前先配置 about:blank 和 CDP 覆盖。GeoIP 未就绪时，管理器拒绝 Web 启动，避免首屏继承主机语言/时区。
+
+### AT-16：新标签页与 CDP 断线恢复 ✅
+
+**实测**：真实 Web 会话中两个 Claude 页面均返回 `navigator.language=en-US`、`Intl.DateTimeFormat().resolvedOptions().timeZone=America/New_York`；CDP 目标监控断开后采用指数退避重连。
+
+### AT-17：请求日志保护 ✅
+
+**实测**：`/api/logs?limit=10` 返回 `retention_minutes=30` 和 `outcome` 字段；Cloudflare 高熵路径段显示为 `[redacted]`，查询参数和 fragment 不进入日志。
+
 ### AT-13：WebRTC 非代理 UDP ✅
 
 **实测**：通过 CDP 创建 ICE offer，只产生本地 mDNS `host` 候选，没有 `srflx`/`relay` 公网候选。
@@ -289,8 +301,11 @@ $ sqlite3 ~/.cim/cim.db "SELECT id, kind, status FROM instance_state ORDER BY id
 | API 集成 | 自动 | ✅（8/8 通过）|
 | AT-13 WebRTC 非代理 UDP | 真实 CDP | ✅ |
 | AT-14 PF fail-closed 断开/恢复 | 真实代理 | ✅ |
+| AT-15 GeoIP gate 与首屏覆盖 | 真实 Web | ✅ |
+| AT-16 新标签页与 CDP 断线恢复 | 真实 Web | ✅ |
+| AT-17 请求日志保护 | 真实 Web | ✅ |
 
-**发布条件**：AT-01~02、AT-08~14 已完成；AT-03 认证失败场景尚未单独执行，AT-04 仍缺 root tcpdump 包级证据，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
+**发布条件**：AT-01~02、AT-08~17 已完成；AT-03 认证失败场景尚未单独执行，AT-04 仍缺 root tcpdump 包级证据，AT-05 的 IPv6-only 访问能力受上游限制。AT-06/07 手动验证后补充记录。
 
 ---
 

@@ -104,8 +104,8 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 
 ```
 GET  /health                            健康检查
-GET  /api/status                        全局状态（代理、四实例、防火墙）
-GET  /api/logs                          当前请求日志（内存缓冲）
+GET  /api/status                        全局状态（代理、GeoIP、四实例、防火墙）
+GET  /api/logs?limit=                   当前请求日志（30分钟/最多2000条）
 DELETE /api/logs                        清空当前请求日志
 GET  /api/validation/{kind}             最近的进程级连接验证证据
 POST /api/instances/{code|vscode|web|desktop}/launch  启动实例
@@ -125,6 +125,8 @@ WS   /ws                                实时状态推送
 - **HTTP 仅本地**：API 只绑 `127.0.0.1`，不对外暴露
 
 Web 出口泄漏的判定方法、现场命令和证据边界见 [`docs/web-leak-evaluation.md`](docs/web-leak-evaluation.md)。请求 URL 日志只说明访问目标，是否经过代理以 `/api/status` 的进程级 lsof 证据为准。
+
+`/api/status.proxy.healthy` 表示代理隧道健康；`geo_ready` 和 `geo_status` 表示 Web 启动所需的位置、语言和时区资料是否就绪。GeoIP 未就绪时 Web 会被阻止启动，避免首屏使用主机环境。
 
 ### macOS 钥匙串授权
 

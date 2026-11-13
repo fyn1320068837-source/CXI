@@ -32,6 +32,9 @@ pub struct RequestLogEntry {
     pub status: u16,
     pub latency_ms: u64,
     pub size_bytes: u64,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub type RequestLogSender = mpsc::Sender<RequestLogEntry>;
