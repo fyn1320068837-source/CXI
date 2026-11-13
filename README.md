@@ -48,7 +48,7 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 
 提供内核级断线保护（PF anchor，按 `cimgrp` 组阻断）。安装命令会写入
 `/etc/pf.anchors/com.cim.block`；还需要按输出提示把 anchor 加入 `/etc/pf.conf`。
-未安装时为软隔离模式。
+未安装时 CIM 拒绝启动受管实例，避免退化为可直连的软隔离模式。
 
 ---
 

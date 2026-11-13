@@ -51,7 +51,7 @@ lsof -a -i TCP -p $WEB_PID -n -P | grep ESTABLISHED
 
 ### AT-02：代理进程被杀 ✅（脚本）
 
-**目标**：sing-box 终止后 10s 内实例冻结
+**目标**：sing-box 终止后一个健康检查周期内进入 PF 阻断
 
 ```bash
 ./tests/chaos/inject-proxy-failure.sh
@@ -74,7 +74,7 @@ lsof -a -i TCP -p $WEB_PID -n -P | grep ESTABLISHED
 tail -f ~/.cim/logs/daemon.log | grep "auth\|fail\|closed"
 ```
 
-**预期**：连续 3 次健康检查失败后触发 fail-closed
+**预期**：单次健康检查失败后立即触发 fail-closed
 
 ---
 

@@ -13,7 +13,7 @@ Web 请求日志和出口泄漏是两类证据。`/api/logs` 记录浏览器访�
 
 `unknown` 表示实例停止或采样时没有活动连接，不能当作安全结论；`fail` 表示发现直连或 lsof 检查失败；Desktop 的 `unsupported` 仍然不受这套自动覆盖保护。
 
-代理隧道健康和 GeoIP 状态现在分开返回：`proxy.healthy` 只表示本地 SOCKS 隧道和出口探测正常，`proxy.geo_ready`/`proxy.geo_status` 表示 Web 所需的时区、语言和位置资料是否就绪。Web 启动会在 GeoIP 未就绪时拒绝导航，避免回退到主机语言和时区。
+代理隧道健康和 GeoIP 状态现在分开返回：`proxy.healthy` 只表示本地 SOCKS 隧道、PF 放行态和出口探测正常，`proxy.geo_ready`/`proxy.geo_status` 表示 Web 所需的时区、语言和位置资料是否就绪。Web 启动会在 GeoIP 未就绪或 PF fail-closed 未安装时拒绝导航，避免回退到主机语言和时区或失去断网保护。
 
 控制台顶部的“Web 安全结论”和 `GET /api/security/web` 使用最新 Web 进程验证证据生成 `PASS`、`FAIL`、`BLOCKED` 或 `UNKNOWN`。它会显示检查年龄、检查 PID、代理/本地/直连计数、PF 状态和限制说明；原始请求 URL 不参与直连判定。
 

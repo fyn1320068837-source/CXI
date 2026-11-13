@@ -120,7 +120,7 @@ impl Default for Config {
             proxy: ProxyConfig {
                 sing_box_binary: "~/.cim/sing-box/sing-box".to_string(),
                 sing_box_config: "~/.cim/sing-box/config.json".to_string(),
-                health_check_interval: 15,
+                health_check_interval: 5,
                 health_check_timeout: 5,
                 exit_ip_endpoints: vec![
                     "https://api.ipify.org".to_string(),
@@ -153,7 +153,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.daemon.listen_addr, "127.0.0.1:8080");
-        assert_eq!(config.proxy.health_check_interval, 15);
+        assert_eq!(config.proxy.health_check_interval, 5);
     }
 
     #[test]

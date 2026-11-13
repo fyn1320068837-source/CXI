@@ -100,7 +100,7 @@ sudo pfctl -a com.cim -s rules
 
 ### 故障态 (block)
 
-当代理进程退出或连续三次出口探测失败时，CIM 守护进程执行：
+当代理进程退出或单次出口探测失败时，CIM 守护进程执行：
 
 ```bash
 sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block

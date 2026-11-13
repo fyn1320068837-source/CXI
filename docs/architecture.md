@@ -34,7 +34,7 @@ CIM (Claude Instance Manager) 是一个 macOS 原生守护进程，用于统一�
 │  ┌─────────────────────────────────────────┐    │
 │  │ Proxy Manager                           │    │
 │  │ - 管理 sing-box 子进程                   │    │
-│  │ - 健康检查 (每 15 秒)                    │    │
+│  │ - 健康检查 (每 5 秒，单次失败阻断)       │    │
 │  │ - 出口 IP 探测                           │    │
 │  │ - GeoIP 解析                             │    │
 │  └─────────────────────────────────────────┘    │
@@ -109,10 +109,10 @@ impl ProxyManager {
 ```
 
 **健康检查**:
-- 间隔: 配置中的 `health_check_interval`（默认 15 秒）
+- 间隔: 配置中的 `health_check_interval`（默认 5 秒）
 - 方法: 经 `127.0.0.1:7891` 的 SOCKS5 入口请求出口 IP
 - 超时: 配置中的 `health_check_timeout`（默认 5 秒）
-- 触发 fail-closed: sing-box 退出立即触发；出口探测连续 3 次失败触发
+- 触发 fail-closed: sing-box 退出或单次出口探测失败立即触发
 - 恢复条件: 出口 IP 探测成功，并重新解析 GeoIP
 
 **sing-box 配置生成**:
@@ -304,12 +304,12 @@ UNKNOWN → (检测到连接) → PASS / FAIL
 ```
 触发条件:
 - sing-box 进程退出
-- 健康检查连续 3 次失败
+- 单次健康检查失败
 
 动作:
 1. [已安装 PF] 将 `com.cim.block` 加载到 anchor
 2. API 阻止新的实例启动，lsof 验证继续显示故障
-3. 控制台显示 PF 故障阻断或软隔离状态
+3. 控制台显示 PF 故障阻断；若 PF 不可用则拒绝启动受管实例
 
 恢复:
 1. sing-box 重启或网络恢复

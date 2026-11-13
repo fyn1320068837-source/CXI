@@ -15,7 +15,10 @@ use tracing::{error, info, warn};
 
 const GEO_CACHE_TTL: StdDuration = StdDuration::from_secs(10 * 60);
 const GEO_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(30);
-const HEALTH_FAILURE_THRESHOLD: u32 = 3;
+// Fail closed on the first failed exit-IP probe. A healthy SOCKS listener is
+// not enough: instances must never keep an allowed PF window after the
+// upstream proxy stops carrying traffic.
+const HEALTH_FAILURE_THRESHOLD: u32 = 1;
 
 #[derive(Clone)]
 struct GeoCacheEntry {
@@ -198,24 +201,40 @@ impl ProxyManager {
     }
 
     pub fn is_healthy(&self) -> bool {
-        self.proxy_healthy.load(Ordering::Acquire) && self.is_running()
+        let firewall = self.firewall.status();
+        self.proxy_healthy.load(Ordering::Acquire)
+            && firewall.installed
+            && firewall.mode == crate::firewall::FirewallMode::Allowed
+            && self.is_running()
     }
 
     pub fn mark_healthy(&self) {
-        self.proxy_healthy.store(true, Ordering::Release);
+        let firewall = self.firewall.status();
+        if !firewall.installed {
+            self.proxy_healthy.store(false, Ordering::Release);
+            warn!("Refusing healthy proxy state while PF fail-closed is not installed");
+            return;
+        }
         if let Err(error) = self.firewall.set_allowed() {
+            self.proxy_healthy.store(false, Ordering::Release);
             warn!(
                 "Failed to clear PF fail-closed rules after proxy recovery: {}",
                 error
             );
+            return;
         }
+        self.proxy_healthy.store(true, Ordering::Release);
     }
 
     pub fn mark_unhealthy(&self) {
-        self.proxy_healthy.store(false, Ordering::Release);
         if let Err(error) = self.firewall.set_blocked() {
             warn!("Failed to enable PF fail-closed rules: {}", error);
         }
+        // Set the health bit after PF has been asked to block so observers do
+        // not see an unhealthy proxy while the anchor is still in allowed
+        // mode. If PF cannot be controlled, the bit remains false and launch
+        // gates refuse new instances.
+        self.proxy_healthy.store(false, Ordering::Release);
     }
 
     pub async fn restart(&self) -> Result<()> {

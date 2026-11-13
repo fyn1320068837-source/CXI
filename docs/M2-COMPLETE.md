@@ -35,8 +35,8 @@ pub struct ProxyManager {
 - Direct outbound（测试模式）
 
 #### 3. 健康检查机制
-- 15秒间隔定期探测
-- 连续2次失败触发fail-closed
+- 5秒间隔定期探测
+- 单次失败触发 fail-closed
 - 进程退出自动检测
 - 多端点出口IP探测
 

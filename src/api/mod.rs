@@ -351,11 +351,18 @@ async fn restart_proxy(
                     }
                 }
             }
-            let _ = state.tx.send(r#"{"type":"proxy_restarted"}"#.to_string());
-            Json(serde_json::json!({
-                "success": true,
-                "message": "sing-box 已重启，新配置生效"
-            }))
+            if state.proxy_manager.is_healthy() {
+                let _ = state.tx.send(r#"{"type":"proxy_restarted"}"#.to_string());
+                Json(serde_json::json!({
+                    "success": true,
+                    "message": "sing-box 已重启，新配置生效"
+                }))
+            } else {
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": "sing-box 已启动，但 fail-closed 尚未解除"
+                }))
+            }
         }
         Err(error) => Json(serde_json::json!({
             "success": false,
@@ -546,6 +553,13 @@ async fn test_proxy(
                     }
                 };
                 state.proxy_manager.mark_healthy();
+                if !state.proxy_manager.is_healthy() {
+                    return Json(serde_json::json!({
+                        "healthy": false,
+                        "error": "FAIL_CLOSED_NOT_READY",
+                        "detail": "PF fail-closed 未安装或未处于放行态"
+                    }));
+                }
                 let geo = match state.proxy_manager.refresh_geo_profile_for_ip(&ip).await {
                     Ok(profile) => Some(geo_info_from_profile(&profile)),
                     Err(error) => {
@@ -919,6 +933,13 @@ async fn launch_instance(
         return Json(serde_json::json!({
             "success": false,
             "message": "代理当前不健康，已阻止实例启动"
+        }));
+    }
+    let firewall = state.proxy_manager.firewall_status();
+    if !firewall.installed {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "PF fail-closed 未安装，已阻止实例启动"
         }));
     }
 
