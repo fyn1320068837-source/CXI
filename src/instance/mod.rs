@@ -17,6 +17,29 @@ pub enum InstanceKind {
     Web,     // D: Claude Web in Chromium
 }
 
+impl InstanceKind {
+    pub const ALL: [Self; 4] = [Self::Code, Self::Desktop, Self::VsCode, Self::Web];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Desktop => "desktop",
+            Self::VsCode => "vscode",
+            Self::Web => "web",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "code" => Some(Self::Code),
+            "desktop" => Some(Self::Desktop),
+            "vscode" => Some(Self::VsCode),
+            "web" => Some(Self::Web),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessHandle {
     pub root_pid: u32,
@@ -197,3 +220,16 @@ pub use desktop::DesktopAdapter;
 pub use manager::InstanceManager;
 pub use vscode::VsCodeAdapter;
 pub use web::WebAdapter;
+
+#[cfg(test)]
+mod tests {
+    use super::InstanceKind;
+
+    #[test]
+    fn instance_kind_round_trips_api_names() {
+        for kind in InstanceKind::ALL {
+            assert_eq!(InstanceKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(InstanceKind::parse("unknown"), None);
+    }
+}

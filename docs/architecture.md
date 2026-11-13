@@ -182,7 +182,7 @@ code --user-data-dir ~/.cim/instances/vscode/data \
 chromium --user-data-dir=$HOME/.cim/instances/chromium \
   --proxy-server=socks5://127.0.0.1:7891 \
   --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" \
-  --force-webrtc-ip-handling-policy=default_public_interface_only \
+  --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
   --disable-background-networking \
   --no-first-run \
   "https://claude.ai"

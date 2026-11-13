@@ -71,13 +71,17 @@ impl InstanceManager {
         self
     }
 
-    pub async fn launch(&self, kind: InstanceKind) -> Result<()> {
-        let adapter: Arc<dyn InstanceAdapter> = match kind {
+    fn adapter_for(&self, kind: InstanceKind) -> Arc<dyn InstanceAdapter> {
+        match kind {
             InstanceKind::Code => self.code.clone(),
             InstanceKind::Desktop => self.desktop.clone(),
             InstanceKind::VsCode => self.vscode.clone(),
             InstanceKind::Web => self.web.clone(),
-        };
+        }
+    }
+
+    pub async fn launch(&self, kind: InstanceKind) -> Result<()> {
+        let adapter = self.adapter_for(kind);
 
         let capability = adapter.detect().await;
         tracing::debug!(
@@ -88,7 +92,7 @@ impl InstanceManager {
             "instance capability detected"
         );
         if !capability.installed {
-            anyhow::bail!("{} is not installed", format!("{:?}", kind).to_lowercase());
+            anyhow::bail!("{} is not installed", kind.as_str());
         }
 
         // WebAdapter's fallback path opens Claude immediately when no GeoIP
@@ -113,8 +117,8 @@ impl InstanceManager {
 
         // Save to storage
         if let Some(ref storage) = self.storage {
-            let kind_str = format!("{:?}", kind).to_lowercase();
-            match storage.save_instance_state(&kind_str, "running", Some(handle.root_pid)) {
+            let kind_str = kind.as_str();
+            match storage.save_instance_state(kind_str, "running", Some(handle.root_pid)) {
                 Ok(id) => tracing::info!("Saved instance state to storage: id={}", id),
                 Err(e) => tracing::error!("Failed to save instance state: {}", e),
             }
@@ -133,19 +137,14 @@ impl InstanceManager {
         let mut instances = self.instances.write().await;
 
         if let Some(Some(handle)) = instances.get(&kind) {
-            let adapter: Arc<dyn InstanceAdapter> = match kind {
-                InstanceKind::Code => self.code.clone(),
-                InstanceKind::Desktop => self.desktop.clone(),
-                InstanceKind::VsCode => self.vscode.clone(),
-                InstanceKind::Web => self.web.clone(),
-            };
+            let adapter = self.adapter_for(kind);
 
             adapter.stop(handle).await?;
 
             // Save to storage
             if let Some(ref storage) = self.storage {
-                let kind_str = format!("{:?}", kind).to_lowercase();
-                match storage.save_instance_state(&kind_str, "stopped", None) {
+                let kind_str = kind.as_str();
+                match storage.save_instance_state(kind_str, "stopped", None) {
                     Ok(id) => tracing::info!("Saved stopped state to storage: id={}", id),
                     Err(e) => tracing::error!("Failed to save stopped state: {}", e),
                 }
@@ -166,19 +165,9 @@ impl InstanceManager {
 
     pub async fn status_all(&self) -> HashMap<InstanceKind, bool> {
         let mut status = HashMap::new();
-        status.insert(
-            InstanceKind::Code,
-            self.is_running(InstanceKind::Code).await,
-        );
-        status.insert(
-            InstanceKind::Desktop,
-            self.is_running(InstanceKind::Desktop).await,
-        );
-        status.insert(
-            InstanceKind::VsCode,
-            self.is_running(InstanceKind::VsCode).await,
-        );
-        status.insert(InstanceKind::Web, self.is_running(InstanceKind::Web).await);
+        for kind in InstanceKind::ALL {
+            status.insert(kind, self.is_running(kind).await);
+        }
         status
     }
 
@@ -194,12 +183,7 @@ impl InstanceManager {
         let handles = self.instances.read().await.clone();
         let mut result = HashMap::new();
 
-        for kind in [
-            InstanceKind::Code,
-            InstanceKind::Desktop,
-            InstanceKind::VsCode,
-            InstanceKind::Web,
-        ] {
+        for kind in InstanceKind::ALL {
             if kind == InstanceKind::Desktop {
                 result.insert(
                     kind,
@@ -217,12 +201,7 @@ impl InstanceManager {
                 continue;
             };
 
-            let adapter: Arc<dyn InstanceAdapter> = match kind {
-                InstanceKind::Code => self.code.clone(),
-                InstanceKind::Desktop => self.desktop.clone(),
-                InstanceKind::VsCode => self.vscode.clone(),
-                InstanceKind::Web => self.web.clone(),
-            };
+            let adapter = self.adapter_for(kind);
             let pids = adapter.process_tree(handle).await;
             match self.verifier.verify_process(&pids).await {
                 Ok(check) => {
@@ -234,7 +213,7 @@ impl InstanceManager {
                     };
                     let details = check.details();
                     let checked_at = chrono::Utc::now().to_rfc3339();
-                    let kind_str = format!("{kind:?}").to_lowercase();
+                    let kind_str = kind.as_str();
                     let status_str = match validation_status {
                         VerificationStatus::Pass => "pass",
                         VerificationStatus::Fail => "fail",
@@ -264,7 +243,7 @@ impl InstanceManager {
                     }
                     if let Some(storage) = &self.storage {
                         if let Err(error) = storage.save_validation_evidence(
-                            &kind_str,
+                            kind_str,
                             status_str,
                             check.proxied_connections,
                             check.local_connections,
@@ -289,10 +268,10 @@ impl InstanceManager {
                 }
                 Err(error) => {
                     let details = format!("lsof verification failed: {}", error);
-                    let kind_str = format!("{kind:?}").to_lowercase();
+                    let kind_str = kind.as_str();
                     if let Some(storage) = &self.storage {
                         if let Err(storage_error) =
-                            storage.save_validation_evidence(&kind_str, "fail", 0, 0, 0, &details)
+                            storage.save_validation_evidence(kind_str, "fail", 0, 0, 0, &details)
                         {
                             tracing::warn!(
                                 instance = %kind_str,

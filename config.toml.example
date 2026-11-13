@@ -19,7 +19,7 @@ sing_box_binary = "~/.cim/sing-box/sing-box"
 sing_box_config = "~/.cim/sing-box/config.json"
 
 # 健康检查间隔（秒）
-health_check_interval = 15
+health_check_interval = 5
 
 # 健康检查超时（秒）
 health_check_timeout = 5

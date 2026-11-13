@@ -916,17 +916,11 @@ async fn launch_instance(
     axum::extract::Path(kind): axum::extract::Path<String>,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let instance_kind = match kind.as_str() {
-        "code" => InstanceKind::Code,
-        "desktop" => InstanceKind::Desktop,
-        "vscode" => InstanceKind::VsCode,
-        "web" => InstanceKind::Web,
-        _ => {
-            return Json(serde_json::json!({
-                "success": false,
-                "message": format!("Unknown instance kind: {}", kind)
-            }));
-        }
+    let Some(instance_kind) = InstanceKind::parse(&kind) else {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": format!("Unknown instance kind: {}", kind)
+        }));
     };
 
     if !state.proxy_manager.is_healthy() {
@@ -965,17 +959,11 @@ async fn stop_instance(
     axum::extract::Path(kind): axum::extract::Path<String>,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let instance_kind = match kind.as_str() {
-        "code" => InstanceKind::Code,
-        "desktop" => InstanceKind::Desktop,
-        "vscode" => InstanceKind::VsCode,
-        "web" => InstanceKind::Web,
-        _ => {
-            return Json(serde_json::json!({
-                "success": false,
-                "message": format!("Unknown instance kind: {}", kind)
-            }));
-        }
+    let Some(instance_kind) = InstanceKind::parse(&kind) else {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": format!("Unknown instance kind: {}", kind)
+        }));
     };
 
     let manager = state.instance_manager.read().await;

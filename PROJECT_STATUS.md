@@ -2,8 +2,8 @@
 
 **项目**: Claude Instance Manager (CIM)  
 **版本**: v1.0.0-dev  
-**日期**: 2026-11-12
-**当前阶段**: 真实代理联调与故障保护验收完成，包级抓包权限待补
+**日期**: 2026-11-13
+**当前阶段**: 真实代理与 Web 泄漏验收完成，进入结构整理和实例隔离方案收敛
 
 ---
 
@@ -15,13 +15,13 @@
 ✅ M1 骨架    [████████] 100%  (2天) - 提前1天完成
 ✅ M2 网关    [████████] 100%  (2天) - 真实 SOCKS5 已联调
 ✅ M3 实例    [████████] 100%  (3天) - Code/Web 已验证
-🟡 M4 验证    [███████ ]  90%  (3天) - lsof/PF 已接入，包级抓包待权限
+✅ M4 验证    [████████] 100%  (3天) - Web 专属进程级与包级 DNS 已完成
 ⬜ M5 B实例   [        ]   0%  (2天)
-🟡 M6 测试    [██████  ]  75%  (3天) - 真实代理、WebRTC、断开恢复已实测
-🟡 M7 交付    [███     ]  40%  (2天) - 最终验收记录待提交
+🟡 M6 测试    [███████ ]  85%  (3天) - 真实代理、WebRTC、DNS、断开恢复已实测
+🟡 M7 交付    [█████   ]  60%  (2天) - 进入结构整理和隔离方案 PoC
 
-总进度: 15/21 天 (71%)
-预计完成: 2026-11-12（取决于 PF 主机权限与 VS Code 安装）
+总进度: 17/21 天 (81%)
+下一阶段: 先完成无行为变化的结构整理，再做 Desktop VM 隔离 PoC
 ```
 
 ---
@@ -149,7 +149,17 @@
 
 ## 🎯 下一步计划
 
-1. **PF 主机安装与故障演练** ✅ 2026-11-11
+完整执行顺序见 [docs/next-plan.md](docs/next-plan.md)，实例隔离分层见
+[docs/instance-isolation-plan.md](docs/instance-isolation-plan.md)。当前优先级是：
+
+1. 完成 API、实例生命周期和 Web CDP 的无行为变化拆分。
+2. 统一启动失败回滚、孤儿进程清理和验证结论。
+3. Code/VS Code 完成真实环境复测。
+4. Desktop 保持 `UNSUPPORTED`，先做 Tart/Apple VM PoC。
+
+已完成的基础项：
+
+- **PF 主机安装与故障演练** ✅ 2026-11-11
    - 当前主机已创建 `cimgrp`（GID 501），安装 `/etc/pf.anchors/com.cim.block`，并将
      `com.cim` anchor 加入 `/etc/pf.conf`；PF 状态为 `Enabled`。
    - 实测杀掉 daemon 管理的 sing-box 后，`/api/status` 在约 2 秒内变为
@@ -158,20 +168,20 @@
    - 已安装 `/etc/sudoers.d/cim_pf` 的 4 条精确授权，并由 `gui/501/com.cim.daemon`
      launchd 服务在清掉 sudo 缓存后完成了阻断/恢复演练。
 
-2. **实例级 PF 启动器** ✅ 2026-11-11
+- **实例级 PF 启动器** ✅ 2026-11-11
    - 安装 root-owned `/usr/local/libexec/cim-instance-launch`，启动前设置用户 supplementary
      groups 和有效 GID，再降权执行实例程序。
    - Web 已通过 helper 启动并完成 `proxied=25, direct=0`；代理断开时同一 helper 的公网直连超时，恢复后 PF 自动放行。
    - Code CLI 与 VS Code CLI 当前未安装，保留为环境补测项。
 
-3. **VS Code 环境复测**
+- **VS Code 环境复测**
    - 安装或提供 VS Code `code` 命令后，验证 `--locale`、TZ/LANG/LC_ALL 和 lsof。
 
-4. **Desktop 隔离方案评估**
+- **Desktop 隔离方案评估**
    - 比较 Tart/Colima VM、独立用户会话和 macOS App 沙盒。
    - 方案确定前，Desktop 继续在控制台标记为“不支持自动覆盖”。
 
-5. **交付**
+- **交付**
    - 运行 `cargo check`、`cargo test --all`、真实代理脚本和 `git diff --check`。
    - 更新变更记录后创建最终 Git commit。
 
@@ -186,6 +196,8 @@
 - ✅ development.md - 开发指南
 - ✅ firewall-setup.md - 防火墙配置
 - ✅ desktop-isolation.md - Desktop 隔离方案评估
+- ✅ next-plan.md - 下一阶段结构整理与验收计划
+- ✅ instance-isolation-plan.md - 实例隔离分层与 VM PoC 计划
 - ✅ M0-FINAL-REPORT.md - M0完成报告
 - ✅ M1-FINAL-REPORT.md - M1完成报告
 - ✅ m0-validation-checklist.md - M0验证清单
