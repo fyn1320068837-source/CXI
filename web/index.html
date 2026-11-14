@@ -371,6 +371,35 @@
         </div>
     </section>
 
+    <!-- ── Desktop Lite 安全结论 ── -->
+    <section>
+        <h2>Desktop Lite 安全状态</h2>
+        <div class="card" id="desktop-security-card">
+            <div class="proxy-row">
+                <span class="lbl">结论</span>
+                <span id="desktop-security-verdict"><span class="badge badge-grey">检测中…</span></span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">网络证据</span>
+                <span class="val" id="desktop-security-connections">代理 — · 本地 — · 直连 — · 进程 —</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">代理 / PF</span>
+                <span class="val" id="desktop-security-network">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">时区 / 语言</span>
+                <span class="val" id="desktop-security-environment">—</span>
+            </div>
+            <div class="proxy-row">
+                <span class="lbl">系统位置</span>
+                <span class="val" id="desktop-security-location">—</span>
+            </div>
+            <div id="desktop-security-reasons" style="margin-top:.65rem;color:var(--muted);font-size:.78rem">—</div>
+            <div id="desktop-security-limitations" style="margin-top:.45rem;color:var(--muted);font-size:.72rem">—</div>
+        </div>
+    </section>
+
     <!-- ── 代理状态 ── -->
     <section>
         <h2>代理状态</h2>
@@ -405,7 +434,7 @@
                 <button class="btn btn-secondary" id="btn-restart" onclick="restartProxy()">重启服务</button>
             </div>
             <div style="margin-top:.55rem;color:var(--muted);font-size:.78rem">
-                时区和语言仅对之后启动的 Code、VS Code、Web 实例生效；Desktop 软隔离模式不自动覆盖。
+                时区和语言仅对之后启动的实例生效；Desktop Lite 为 best-effort，系统位置仍不自动覆盖。
             </div>
         </div>
     </section>
@@ -453,7 +482,7 @@
                 </div>
                 <div class="inst-row">
                     <span>验证</span>
-                    <span id="desktop-validation"><span class="badge badge-grey">UNSUPPORTED</span></span>
+                    <span id="desktop-validation"><span class="badge badge-grey">UNKNOWN</span></span>
                 </div>
                 <div class="inst-row">
                     <span>连接证据</span>
@@ -464,7 +493,7 @@
                     <span class="validation-detail" id="desktop-validation-checked-at">—</span>
                 </div>
                 <div class="inst-row" style="color: var(--muted); font-size:.8rem;">
-                    <span colspan="2">软隔离模式，网络验证不可用</span>
+                    <span colspan="2">Desktop Lite：网络可验证；时区/语言 best-effort，位置不支持</span>
                 </div>
                 <div class="inst-actions">
                     <button class="btn btn-primary"    id="desktop-launch-btn" onclick="launch('desktop')">启动</button>
@@ -779,13 +808,49 @@ function renderSecurity(s) {
     document.getElementById('security-limitations').textContent = limitations.length ? `限制：${limitations.join('；')}` : '';
 }
 
+function renderDesktopSecurity(s) {
+    const verdict = s.verdict || 'UNKNOWN';
+    const classes = { PARTIAL: 'warn', PASS: 'pass', FAIL: 'fail', BLOCKED: 'warn', UNKNOWN: 'warn' };
+    document.getElementById('desktop-security-verdict').innerHTML =
+        badge(classes[verdict] || 'grey', s.label || verdict);
+    const desktop = s.desktop || {};
+    document.getElementById('desktop-security-connections').textContent =
+        `代理 ${desktop.proxied ?? '—'} · 本地 ${desktop.local ?? '—'} · 直连 ${desktop.direct ?? '—'} · 进程 ${desktop.checked_pids ?? '—'}`;
+    document.getElementById('desktop-security-network').textContent =
+        `网络 ${s.network_verdict || 'UNKNOWN'} · ${s.proxy?.healthy ? '代理正常' : '代理异常'} · PF ${s.firewall?.mode || '—'} · ${s.checks?.isolation_helper ? 'helper就绪' : 'helper缺失'}`;
+    const environment = s.environment || {};
+    document.getElementById('desktop-security-environment').textContent =
+        `${environment.status || 'unknown'} · TZ ${environment.timezone || '—'} · LANG ${environment.language || '—'}`;
+    const location = s.location || {};
+    document.getElementById('desktop-security-location').textContent =
+        `${location.status || 'unknown'} · ${location.details || '—'}`;
+    const reasons = s.reasons || [];
+    document.getElementById('desktop-security-reasons').textContent =
+        reasons.length ? `状态：${reasons.join('；')}` : '状态：未发现直连证据';
+    const limitations = s.limitations || [];
+    document.getElementById('desktop-security-limitations').textContent =
+        limitations.length ? `限制：${limitations.join('；')}` : '';
+}
+
 async function pollSecurity() {
     try {
-        const r = await fetch('/api/security/web');
-        if (!r.ok) return;
-        const d = await r.json();
-        if (d.success) renderSecurity(d);
-    } catch {}
+        const requests = await Promise.allSettled([
+            fetch('/api/security/web'),
+            fetch('/api/security/desktop'),
+        ]);
+        const [webResult, desktopResult] = requests;
+        if (webResult.status === 'fulfilled' && webResult.value.ok) {
+            const d = await webResult.value.json();
+            if (d.success) renderSecurity(d);
+        }
+        if (desktopResult.status === 'fulfilled' && desktopResult.value.ok) {
+            const d = await desktopResult.value.json();
+            if (d.success) renderDesktopSecurity(d);
+        }
+    } catch {
+        // Keep the last known security state visible during a transient API
+        // or daemon restart, just like the existing Web security card.
+    }
 }
 
 // ── WebSocket ──────────────────────────────────────────────

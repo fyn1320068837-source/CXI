@@ -14,7 +14,6 @@ fn parse_detail_count(details: &str, key: &str) -> usize {
         .and_then(|value| value.parse().ok())
         .unwrap_or(0)
 }
-
 fn parse_checked_pids(details: &str) -> usize {
     details
         .split_once("checked ")
@@ -223,6 +222,195 @@ async fn get_web_security(
             "结论基于 Web 进程树 lsof 观测，不是全局抓包保证",
             "UDP 53、WebRTC 公网候选和 IPv6-only 需要单独主动测试",
             "请求 URL 日志只能说明访问目标，不能作为直连判定依据",
+        ],
+    }))
+}
+
+/// Desktop Lite has a deliberately narrower conclusion than Web. A fresh
+/// process-level network PASS is useful evidence, but it does not prove that
+/// Claude Desktop's native location service or every Electron setting was
+/// overridden. Keep those dimensions explicit so the console cannot turn a
+/// network-only result into a blanket privacy claim.
+async fn get_desktop_security(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let manager = state.instance_manager.read().await;
+    let status_map = manager.status_all().await;
+    let pid_map = manager.pid_all().await;
+    let validation_map = manager.validation_all().await;
+    let firewall = state.proxy_manager.firewall_status();
+    let proxy_healthy = state.proxy_manager.is_healthy();
+    let isolation_helper_ready = crate::instance::isolation_ready();
+    let desktop_running = status_map
+        .get(&InstanceKind::Desktop)
+        .copied()
+        .unwrap_or(false);
+    let desktop_pid = pid_map.get(&InstanceKind::Desktop).copied().flatten();
+    let validation = validation_map.get(&InstanceKind::Desktop);
+    let validation_name = validation
+        .map(|value| validation_name(&value.status))
+        .unwrap_or("unknown");
+    let validation_checked_at = validation.and_then(|value| value.checked_at.clone());
+    let evidence = state
+        .storage
+        .recent_validation_evidence_async("desktop", 1)
+        .await
+        .ok()
+        .and_then(|values| values.into_iter().next());
+    let details = evidence
+        .as_ref()
+        .and_then(|value| value.details.clone())
+        .or_else(|| validation.map(|value| value.details.clone()))
+        .unwrap_or_default();
+    let evidence_timestamp = evidence.as_ref().map(|value| value.timestamp.clone());
+    let checked_at = evidence_timestamp.clone().or(validation_checked_at.clone());
+    let age_seconds = checked_at.as_deref().and_then(|timestamp| {
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .ok()
+            .map(|value| {
+                (Utc::now() - value.with_timezone(&Utc))
+                    .num_seconds()
+                    .max(0)
+            })
+    });
+    let evidence_matches_validation = match (
+        evidence_timestamp.as_deref(),
+        validation_checked_at.as_deref(),
+    ) {
+        (Some(evidence_timestamp), Some(validation_timestamp)) => match (
+            chrono::DateTime::parse_from_rfc3339(evidence_timestamp),
+            chrono::DateTime::parse_from_rfc3339(validation_timestamp),
+        ) {
+            (Ok(evidence_time), Ok(validation_time)) => {
+                (validation_time - evidence_time).num_seconds().abs()
+                    <= SECURITY_EVIDENCE_MATCH_WINDOW_SECONDS
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    let evidence_fresh = age_seconds
+        .map(|age| age <= SECURITY_EVIDENCE_TTL_SECONDS)
+        .unwrap_or(false)
+        && evidence_matches_validation;
+    let current_evidence = evidence.as_ref().filter(|_| evidence_fresh);
+    let proxied = current_evidence
+        .map(|value| value.proxied_count)
+        .or_else(|| evidence_fresh.then(|| parse_detail_count(&details, "proxied")));
+    let local = current_evidence
+        .map(|value| value.local_count)
+        .or_else(|| evidence_fresh.then(|| parse_detail_count(&details, "local")));
+    let direct = current_evidence
+        .map(|value| value.direct_count)
+        .or_else(|| evidence_fresh.then(|| parse_detail_count(&details, "direct")));
+    let checked_pids = if evidence_fresh {
+        parse_checked_pids(&details)
+    } else {
+        0
+    };
+    let direct_items = if evidence_fresh {
+        direct_endpoints(&details)
+    } else {
+        Vec::new()
+    };
+    let firewall_mode = format!("{:?}", firewall.mode).to_lowercase();
+    let has_direct = direct.map(|value| value > 0).unwrap_or(false);
+    let has_proxy = proxied.map(|value| value > 0).unwrap_or(false);
+    let network_verdict = if has_direct || validation_name == "fail" {
+        "FAIL"
+    } else if !desktop_running {
+        "UNKNOWN"
+    } else if !proxy_healthy && firewall_mode == "blocked" {
+        "BLOCKED"
+    } else if !proxy_healthy || firewall_mode != "allowed" {
+        "FAIL"
+    } else if !evidence_fresh || validation_name != "pass" || !has_proxy {
+        "UNKNOWN"
+    } else {
+        "PASS"
+    };
+    let mut reasons = Vec::new();
+    let verdict = match network_verdict {
+        "FAIL" => {
+            reasons.push("Desktop 进程树存在直连或网络验证失败".to_string());
+            "FAIL"
+        }
+        "BLOCKED" => {
+            reasons.push("代理异常，PF 已阻断 Desktop 直连".to_string());
+            "BLOCKED"
+        }
+        "PASS" => {
+            reasons.push("网络连接均通过代理，未发现直连证据".to_string());
+            "PARTIAL"
+        }
+        _ => {
+            if !desktop_running {
+                reasons.push("Desktop Lite 未运行，没有新鲜连接样本".to_string());
+            } else {
+                reasons.push("Desktop Lite 网络证据不存在或已过期".to_string());
+            }
+            "UNKNOWN"
+        }
+    };
+    let label = match verdict {
+        "PARTIAL" => "部分安全 · 网络通过，位置未覆盖",
+        "FAIL" => "风险 · 发现直连或验证失败",
+        "BLOCKED" => "已阻断 · 代理故障期间 PF 生效",
+        _ => "待确认 · 证据不足或已过期",
+    };
+
+    Json(serde_json::json!({
+        "success": true,
+        "verdict": verdict,
+        "label": label,
+        "network_verdict": network_verdict,
+        "checked_at": checked_at,
+        "age_seconds": age_seconds,
+        "evidence_ttl_seconds": SECURITY_EVIDENCE_TTL_SECONDS,
+        "proxy": {
+            "healthy": proxy_healthy,
+        },
+        "firewall": {
+            "installed": firewall.installed,
+            "mode": firewall_mode,
+        },
+        "desktop": {
+            "running": desktop_running,
+            "pid": desktop_pid,
+            "validation": validation_name,
+            "validation_checked_at": validation_checked_at,
+            "checked_pids": checked_pids,
+            "proxied": proxied,
+            "local": local,
+            "direct": direct,
+            "direct_endpoints": direct_items,
+        },
+        "environment": {
+            "status": "partial",
+            "timezone": "best_effort",
+            "language": "best_effort",
+            "details": "Desktop Lite 注入 TZ/LANG/LC_ALL，但原生 Electron 模块仍需实测",
+        },
+        "location": {
+            "status": "unsupported",
+            "details": "无法可靠覆盖 Claude Desktop 的 macOS CoreLocation",
+        },
+        "checks": {
+            "proxy_healthy": proxy_healthy,
+            "isolation_helper": isolation_helper_ready,
+            "pf_fail_closed": firewall.installed
+                && (firewall_mode == "blocked" || firewall_mode == "allowed"),
+            "validation_pass": network_verdict == "PASS" && evidence_fresh,
+            "direct_zero": direct == Some(0),
+            "udp53": "not_sampled",
+            "webrtc_public_candidates": "not_applicable",
+            "ipv6_direct": "not_sampled",
+        },
+        "reasons": reasons,
+        "limitations": [
+            "网络结论基于 Desktop 进程树 lsof 观测，不是全局抓包保证",
+            "时区和语言是 best-effort，CoreLocation 位置保持不支持",
+            "UDP 53、IPv6-only 和原生 Electron 模块需要单独主动测试",
         ],
     }))
 }

@@ -3,9 +3,10 @@
 ## 当前结论
 
 本机已经满足 Apple VM 的硬件和系统条件：Apple Silicon（arm64）、macOS 26.6.2，
-`Virtualization.framework` 可用。Tart 2.41.1 已安装，但 macOS VM 镜像下载在解包到
-约 78% 时因系统盘只剩约 3.8GiB 被中止，未留下可用 VM 或缓存；当前没有本地 VM，
-因此 PoC 还没有进入真实 VM 联调；Claude Desktop 继续标记为 `UNSUPPORTED`。
+`Virtualization.framework` 可用，Tart 2.41.1 也曾安装过；本轮为了采用轻量方案，已删除
+`cim-desktop-poc`、macOS VM 镜像和本地 OCI 缓存（约 51GB）。因此 PoC 目前是可选的
+P2 方案，不是 Desktop Lite 的运行前置；Desktop Lite 的网络结论由宿主 PF、`cimgrp`
+和进程级 lsof 验证。
 
 Colima/Lima 只适合容器或 CLI 场景，不能作为 Claude Desktop Electron 的隔离后端。
 PoC 不会把宿主机 `open -a Claude` 误报为已隔离实例，也不会自动修改宿主代理、PF 或
@@ -115,10 +116,10 @@ CIM_DESKTOP_PROXY_HOST=<宿主机可达地址> \
 | Tart | 2.41.1，已安装 |
 | macOS VM 镜像 | 不存在（下载因磁盘空间中止） |
 | Colima/Lima | 已安装，但不作为 Desktop 后端 |
-| 当前 Desktop backend | 宿主机软隔离，`UNSUPPORTED` |
+| 当前 Desktop backend | Desktop Lite：宿主 PF/`cimgrp`，网络通过时整体 `PARTIAL` |
 
-完成上述 PoC 前，不修改 `DesktopAdapter` 的 `use_vm` 默认值，也不把 Desktop 加入真实
-代理回归的通过项。
+完成上述 PoC 前，不把 VM 当作默认后端；Desktop Lite 已加入真实代理集成测试，VM 仅在
+确实需要 VM 级系统边界时重新准备。
 
-继续下载前需要先释放系统盘空间，建议至少保留 45GiB 可用，或把 Tart 数据目录放到
-有足够空间的外置磁盘；释放空间后重新运行 `tests/desktop_tart_poc.sh prepare`。
+如决定重启 P2 PoC，需先准备至少约 45GiB 可用空间，再运行
+`tests/desktop_tart_poc.sh prepare`；这不会影响当前 Desktop Lite 方案。

@@ -66,7 +66,7 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 | 实例 | 客户端 | 隔离方式 | 网络验证 |
 |------|--------|---------|---------|
 | A · Code | Claude Code CLI | 独立 `HOME` 目录 | ✅ PASS/FAIL/UNKNOWN |
-| B · Desktop | Claude Desktop | 软隔离（VM 可选） | ⚠ UNSUPPORTED |
+| B · Desktop | Claude Desktop | Desktop Lite：独立目录 + `cimgrp`/PF | ⚠ PARTIAL（网络可验证，位置不支持） |
 | C · VSCode | VS Code 扩展 | 独立 `--user-data-dir` | ✅ PASS/FAIL/UNKNOWN |
 | D · Web | Chrome/Chromium | 独立 `--user-data-dir` | ✅ PASS/FAIL/UNKNOWN |
 
@@ -81,7 +81,8 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 | **PASS** | lsof 确认全部连接走代理，有进程级证据 |
 | **FAIL** | 检测到直连公网 IP，立即告警 |
 | **UNKNOWN** | 实例空闲无连接，或 lsof 未返回结果 |
-| **UNSUPPORTED** | 技术上无法验证（Desktop 软隔离模式）|
+| **PARTIAL** | 网络证据通过，但环境或位置维度仍有限制 |
+| **UNSUPPORTED** | 当前后端无法启动或验证该实例 |
 
 **重要**：UNKNOWN ≠ PASS，空闲状态不代表隔离有效。
 
@@ -102,7 +103,7 @@ sudo "$HOME/.cim/bin/cim" install-firewall
     ├── code/                 # A 实例 HOME
     ├── vscode/               # C 实例 user-data + extensions
     ├── web/                  # D 实例 user-data-dir
-    └── desktop-vm/           # B 实例 VM 磁盘（可选）
+    └── desktop/              # B 实例 Desktop Lite 独立目录
 ```
 
 ---
@@ -115,6 +116,7 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 GET  /health                            健康检查
 GET  /api/status                        全局状态（代理、GeoIP、四实例、防火墙）
 GET  /api/security/web                  Web 安全聚合结论（PASS/FAIL/BLOCKED/UNKNOWN）
+GET  /api/security/desktop              Desktop Lite 安全聚合结论（PARTIAL/FAIL/BLOCKED/UNKNOWN）
 GET  /api/logs?limit=                   当前请求日志（30分钟/最多2000条）
 DELETE /api/logs                        清空当前请求日志
 GET  /api/validation/{kind}             最近的进程级连接验证证据
@@ -156,7 +158,7 @@ IANA 时区和语言推荐。该配置只作用于 CIM 新启动的隔离实例�
 - Code：设置 `TZ`、`LANG` 和 `LC_ALL`
 - VS Code：设置上述环境变量，并传入对应的 `--locale`
 - Web：设置上述环境变量、浏览器语言，并通过 Chrome DevTools 覆盖时区和 IP 定位
-- Desktop：软隔离模式无法可靠注入环境，仍标记为不支持自动应用
+- Desktop：Desktop Lite 注入 TZ/LANG/LC_ALL 并使用独立目录；CoreLocation 位置仍不支持可靠覆盖
 
 GeoIP 查询失败时不会猜测位置：同一出口 IP 会暂时保留最近一次成功 profile，
 出口 IP 变化则清理旧 profile；控制台会显示当前已解析的出口 IP、地理位置、时区和语言/Locale。

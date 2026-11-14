@@ -11,7 +11,7 @@ Web 请求日志和出口泄漏是两类证据。`/api/logs` 记录浏览器访�
 3. `validation_details` 中 `proxied` 大于 0 且 `direct=0`。
 4. `firewall.mode` 为 `allowed`，PF anchor 已安装。
 
-`unknown` 表示实例停止或采样时没有活动连接，不能当作安全结论；`fail` 表示发现直连或 lsof 检查失败；Desktop 的 `unsupported` 仍然不受这套自动覆盖保护。
+`unknown` 表示实例停止或采样时没有活动连接，不能当作安全结论；`fail` 表示发现直连或 lsof 检查失败。Desktop Lite 通过 `/api/security/desktop` 单独展示网络结论、PF/helper 状态、环境覆盖和 CoreLocation 限制；网络通过时整体仍是 `PARTIAL`，不是位置已覆盖的完整保证。
 
 代理隧道健康和 GeoIP 状态现在分开返回：`proxy.healthy` 只表示本地 SOCKS 隧道、PF 放行态和出口探测正常，`proxy.geo_ready`/`proxy.geo_status` 表示 Web 所需的时区、语言和位置资料是否就绪。Web 启动会在 GeoIP 未就绪或 PF fail-closed 未安装时拒绝导航，避免回退到主机语言和时区或失去断网保护。
 

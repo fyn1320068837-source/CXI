@@ -22,6 +22,18 @@ async fn launch_instance(
             "message": "PF fail-closed 未安装，已阻止实例启动"
         }));
     }
+    if firewall.mode != crate::firewall::FirewallMode::Allowed {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "PF 当前不是 allowed 状态，已阻止实例启动"
+        }));
+    }
+    if !isolation_ready() {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "cimgrp/root helper 未就绪，已阻止实例启动"
+        }));
+    }
 
     let manager = state.instance_manager.read().await;
     match manager.launch(instance_kind).await {

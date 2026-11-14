@@ -151,6 +151,16 @@ PY
     assert_contains "$kind proxy" '--proxy-server=http://127.0.0.1:7890' "$process_tree_cmd"
     assert_contains "$kind locale flag" '--locale' "$process_tree_cmd"
     assert_contains "$kind language" "$expected_lang" "$process_tree_cmd"
+  elif [[ "$kind" == "desktop" ]]; then
+    assert_contains "$kind binary" '/Applications/Claude.app/Contents/MacOS/Claude' "$process_tree_cmd"
+    assert_contains "$kind data dir" "--user-data-dir=$HOME/.cim/instances/desktop/user-data" "$process_tree_cmd"
+    assert_contains "$kind proxy" '--proxy-server=http://127.0.0.1:7890' "$process_tree_cmd"
+    assert_contains "$kind QUIC guard" '--disable-quic' "$process_tree_cmd"
+    assert_contains "$kind HOME" "HOME=$HOME/.cim/instances/desktop" "$process_tree_env"
+    assert_contains "$kind timezone" "TZ=$expected_tz" "$process_tree_env"
+    assert_contains "$kind locale" "LANG=$expected_locale" "$process_tree_env"
+    assert_contains "$kind HTTP proxy" 'HTTPS_PROXY=http://127.0.0.1:7890' "$process_tree_env"
+    assert_contains "$kind SOCKS proxy" 'ALL_PROXY=socks5://127.0.0.1:7891' "$process_tree_env"
   fi
   echo "lsof for $kind pid $pid"
   for process_pid in "${pids[@]}"; do
@@ -185,6 +195,19 @@ assert payload.get("verdict") == "PASS", payload
 assert payload.get("web", {}).get("direct") == 0, payload
 assert payload.get("checks", {}).get("direct_zero"), payload
 assert payload.get("checks", {}).get("validation_pass"), payload
+PY
+  elif [[ "$kind" == "desktop" ]]; then
+    security="$(curl_json "$BASE_URL/api/security/desktop")"
+    python3 - "$security" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+assert payload.get("success"), payload
+assert payload.get("verdict") == "PARTIAL", payload
+assert payload.get("network_verdict") == "PASS", payload
+assert payload.get("desktop", {}).get("direct") == 0, payload
+assert payload.get("checks", {}).get("direct_zero"), payload
+assert payload.get("environment", {}).get("status") == "partial", payload
+assert payload.get("location", {}).get("status") == "unsupported", payload
 PY
   fi
   curl_json -X POST "$BASE_URL/api/instances/$kind/stop" >/dev/null

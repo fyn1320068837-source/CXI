@@ -30,7 +30,10 @@ impl InstanceManager {
                 format!("{}/.cim/instances/code", std::env::var("HOME").unwrap()),
                 geo_profile.clone(),
             )),
-            desktop: Arc::new(DesktopAdapter::new(false)),
+            desktop: Arc::new(DesktopAdapter::new_with_geo_profile(
+                format!("{}/.cim/instances/desktop", std::env::var("HOME").unwrap()),
+                geo_profile.clone(),
+            )),
             vscode: Arc::new(VsCodeAdapter::new_with_geo_profile(
                 format!(
                     "{}/.cim/instances/vscode/data",
@@ -212,20 +215,6 @@ impl InstanceManager {
         let mut result = HashMap::new();
 
         for kind in InstanceKind::ALL {
-            if kind == InstanceKind::Desktop {
-                result.insert(
-                    kind,
-                    InstanceValidation {
-                        status: ValidationStatus::Unsupported,
-                        details: "Desktop 自动覆盖未支持，当前为软隔离模式".to_string(),
-                        checked_at: None,
-                        reason: Some("unsupported_backend".to_string()),
-                        direct_endpoints: Vec::new(),
-                    },
-                );
-                continue;
-            }
-
             let Some(handle) = handles.get(&kind) else {
                 result.insert(kind, InstanceValidation::unknown("instance stopped"));
                 continue;

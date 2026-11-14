@@ -2,8 +2,8 @@
 
 **项目**: Claude Instance Manager (CIM)  
 **版本**: v1.0.0-dev  
-**日期**: 2026-11-13
-**当前阶段**: P0/P1 结构整理与实例运行时验收完成，进入 Desktop 隔离 PoC
+**日期**: 2026-11-14
+**当前阶段**: P0/P1 结构整理与实例运行时验收完成，Desktop Lite P0 已实现，进入真实 Claude.app 回归
 
 ---
 
@@ -16,12 +16,12 @@
 ✅ M2 网关    [████████] 100%  (2天) - 真实 SOCKS5 已联调
 ✅ M3 实例    [████████] 100%  (3天) - Code/Web 已验证
 ✅ M4 验证    [████████] 100%  (3天) - Web 专属进程级与包级 DNS 已完成
-⬜ M5 B实例   [        ]   0%  (2天)
+🟡 M5 B实例   [██████  ]  75%  (2天) - Desktop Lite P0 已实现，等待真实 Claude.app 回归
 🟡 M6 测试    [███████ ]  90%  (3天) - 真实代理、WebRTC、DNS、断开恢复、Code 回归已实测
-🟡 M7 交付    [██████  ]  70%  (2天) - P0/P1 已完成，等待 VS Code 环境与 Desktop PoC
+🟡 M7 交付    [███████ ]  80%  (2天) - Desktop Lite P0 已完成，等待真实 Claude.app 与 VS Code 环境回归
 
 总进度: 17/21 天 (81%)
-下一阶段: 完成 Tart/Apple VM 隔离 PoC，再决定是否实现 Desktop VM backend
+下一阶段: 完成 Desktop Lite 真实回归；Tart/Apple VM 降为可选 P2
 ```
 
 ---
@@ -154,7 +154,7 @@
 [docs/instance-isolation-plan.md](docs/instance-isolation-plan.md)。当前优先级是：
 
 1. 在安装 VS Code 的主机执行 `CIM_REAL_PROXY_INSTANCES=vscode` 真实回归。
-2. Desktop 保持 `UNSUPPORTED`，运行 `tests/desktop_tart_poc.sh` 完成 Tart/Apple VM PoC。
+2. 在安装 Claude.app 的主机完成 Desktop Lite 正常、断代理阻断、恢复放行和递归 lsof 回归；Tart 镜像已删除，VM 仅作为可选 P2。
 3. 继续维护 PF、GeoIP 和实例进程回归证据。
 
 已完成的基础项：
@@ -177,16 +177,11 @@
 - **VS Code 环境复测**
    - 安装或提供 VS Code `code` 命令后，运行 `CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=vscode ./tests/real_proxy_integration.sh`，验证 `--locale`、独立 data/extensions、代理和 lsof。
 
-- **Desktop 隔离方案评估**
-   - 比较 Tart/Colima VM、独立用户会话和 macOS App 沙盒。
-   - 方案确定前，Desktop 继续在控制台标记为“不支持自动覆盖”。
-
-- **Desktop Tart/Apple VM PoC（进行中）**
-   - 本机已确认 Apple Silicon、macOS 26.6.2 和 `Virtualization.framework` 可用。
-   - 已加入只读检查及显式 `prepare/run/verify/stop` 脚本；不会自动安装 Tart、下载镜像或修改宿主网络。
-   - Tart 2.41.1 已安装；macOS VM 镜像下载到约 78% 时因系统盘余量降至约 3.8GiB 中止，未留下半成品 VM。
-   - 继续下载前需要释放空间并保留至少约 45GiB 可用；宿主代理仍只监听 `127.0.0.1`，不能直接作为 VM 网关。
-   - 在健康、代理断开、恢复三阶段证据完成前，Desktop 继续保持 `UNSUPPORTED`。
+- **Desktop Lite P0**
+   - 已完成直接二进制启动、独立目录、`cimgrp`/PF fail-closed、启动失败回滚和孤儿 helper 清理。
+   - 新增 `/api/security/desktop`，将网络、代理/PF、环境覆盖和 CoreLocation 限制分层展示。
+   - Tart 2.41.1、`cim-desktop-poc` VM 及约 51GB 本地 macOS 镜像缓存已删除，释放约 48GB；当前方案不依赖 VM。
+   - 待在安装 Claude.app 的主机执行真实 Desktop 回归。
 
 - **交付**
    - 运行 `cargo check`、`cargo test --all`、真实代理脚本和 `git diff --check`。
@@ -245,7 +240,7 @@ tx.send(status_json)?;
 - 其他主机仍需要管理员权限完成 `/etc/pf.conf` anchor 安装；未安装时显示软隔离模式。
 - 实例进程现在通过 root-owned `cim-instance-launch` 降权到 `cimgrp` 后启动；daemon 和
   sing-box 仍保持普通用户身份，PF 规则不再只停留在手工组进程验证层。
-- Desktop 尚未进入 VM 或独立启动环境，保持 `UNSUPPORTED`。
+- Desktop Lite 已进入独立启动环境；网络可验证，时区/语言为 best-effort，CoreLocation 位置保持不支持。
 - 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测；适配器已支持 PATH 和标准 app bundle 路径发现。
 - Claude 登录页的 Permissions-Policy 可能阻止脚本读取 geolocation；CDP 覆盖命令仍会发送。
 - 新版浏览器首屏、请求日志、DevTools 超时和新标签页自动接管已通过 `cargo check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`；launchd 当前运行 `~/.cim/bin/cim`，新 release 可通过 `./scripts/restart-daemon.sh` 无 sudo 更新。
@@ -285,10 +280,10 @@ pkill -f "cim daemon"
 **开发进度**: P0/P1 结构整理、Web/Code 真实代理联调已完成
 **代码质量**: `cargo check` 无警告
 **文档完备**: 联调、PF 和 Desktop 限制已记录
-**测试覆盖**: 30 个 Rust 单测 + 可选 Code/VS Code/Web 真实代理集成脚本
+**测试覆盖**: 34 个 Rust 单测 + 可选 Code/VS Code/Web/Desktop 真实代理集成脚本
 
 ---
 
-**报告生成**: 2026-11-13
-**下次更新**: VS Code 安装后或 Desktop VM PoC 完成后
-**状态**: 🟡 代理链路和 P1 运行时通过，等待 VS Code 条件与 Desktop 隔离方案
+**报告生成**: 2026-11-14
+**下次更新**: VS Code 安装后或 Desktop Lite 真实回归完成后
+**状态**: 🟡 代理链路和 P1 运行时通过，等待 VS Code 条件与 Desktop Lite 实测

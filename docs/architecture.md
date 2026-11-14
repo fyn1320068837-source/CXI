@@ -154,11 +154,11 @@ HOME=~/.cim/instances/code \
 #### B: DesktopAdapter (Claude Desktop)
 
 **两档模式**:
-1. **默认档**: `open -a Claude` + 环境变量
-   - 标注: UNSUPPORTED
-   - 原因: Electron 辅助进程不保证继承代理
-   
-2. **VM 档** (推荐):
+1. **Desktop Lite（当前）**: 直接执行 Claude.app 二进制，使用独立 HOME/user-data、代理环境、`cimgrp` 和 PF fail-closed
+   - 网络证据由进程树 lsof 验证，整体安全结论为 `PARTIAL`
+   - 时区/语言为 best-effort，CoreLocation 位置保持 unsupported
+
+2. **VM 档（可选 P2）**:
    - Tart VM 运行 Desktop
    - 系统级 SOCKS5 代理指向宿主机
    - 验证: 宿主机监控 VM NAT 流量

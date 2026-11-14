@@ -135,6 +135,13 @@ pub fn isolation_group_gid() -> Option<u32> {
     }
 }
 
+/// Return whether the process-level PF boundary is ready for a managed
+/// instance. The API layer uses this as a launch gate so a missing helper
+/// cannot silently downgrade a protected instance to a direct child process.
+pub fn isolation_ready() -> bool {
+    isolation_group_gid().is_some() && Path::new(INSTANCE_LAUNCHER).is_file()
+}
+
 #[cfg(target_os = "macos")]
 fn parse_primary_group_id(output: &[u8]) -> Option<u32> {
     String::from_utf8_lossy(output)

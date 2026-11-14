@@ -1,6 +1,8 @@
 // API Server module - HTTP REST + WebSocket endpoints
 use crate::geoip::{GeoProfile, SharedGeoProfile};
-use crate::instance::{InstanceKind, InstanceManager, RequestLogEntry, ValidationStatus};
+use crate::instance::{
+    isolation_ready, InstanceKind, InstanceManager, RequestLogEntry, ValidationStatus,
+};
 use crate::proxy::ProxyManager;
 use crate::storage::Storage;
 use axum::{
@@ -105,6 +107,7 @@ pub async fn create_router(
         .route("/api/logs", get(get_logs).delete(clear_logs))
         .route("/api/validation/:kind", get(get_validation_history))
         .route("/api/security/web", get(get_web_security))
+        .route("/api/security/desktop", get(get_desktop_security))
         .route("/ws", get(websocket_handler))
         .nest_service("/static", ServeDir::new("web"))
         .with_state(Arc::new(state))
@@ -116,3 +119,31 @@ include!("logs.rs");
 include!("security.rs");
 include!("instances.rs");
 include!("websocket.rs");
+
+#[cfg(test)]
+mod security_tests {
+    use super::{direct_endpoints, parse_checked_pids, parse_detail_count};
+
+    #[test]
+    fn parses_network_validation_details() {
+        let details =
+            "checked 3 pids; proxied=2, local=1, direct=4321:203.0.113.10:443 (ESTABLISHED)";
+
+        assert_eq!(parse_checked_pids(details), 3);
+        assert_eq!(parse_detail_count(details, "proxied"), 2);
+        assert_eq!(parse_detail_count(details, "local"), 1);
+        assert_eq!(
+            direct_endpoints(details),
+            vec!["4321:203.0.113.10:443 (ESTABLISHED)".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_direct_count_has_no_endpoints() {
+        let details = "checked 2 pids; proxied=4, local=1, direct=0";
+
+        assert_eq!(parse_checked_pids(details), 2);
+        assert_eq!(parse_detail_count(details, "direct"), 0);
+        assert!(direct_endpoints(details).is_empty());
+    }
+}

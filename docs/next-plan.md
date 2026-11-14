@@ -4,7 +4,7 @@
 
 - Code、VS Code、Web 使用 root-owned `cim-instance-launch`、`cimgrp` 和 PF fail-closed。
 - Web 已完成 GeoIP 首屏覆盖、代理连接验证、WebRTC/IPv6/DNS 复测；Web 专属 DNS 包级验证通过。
-- Desktop 仍是宿主机 `open -a Claude`，状态固定为 `UNSUPPORTED`。
+- Desktop 已切换到 Desktop Lite：直接启动 Claude 二进制、独立目录、`cimgrp`/PF fail-closed；网络结论可验证，位置仍不支持自动覆盖。
 - 已完成低风险结构整理：`InstanceKind` 统一字符串解析和枚举列表，`InstanceManager` 统一 adapter 选择，API 去掉重复 kind 映射；API、Web、Proxy 已按职责拆分。
 - 本轮完成 `InstanceRuntime`：启动预留防重复启动，启动事务在存储失败时回滚进程，停止时保留失败句柄，统一清理进程树；Web 启动失败会删除本次 session 目录。
 
@@ -25,13 +25,18 @@
 3. ✅ 统一验证结论：verifier 输出 `direct=0`、`proxied`、直接端点、检查时间和失败原因；PF 状态继续由全局 firewall 结论提供。
 4. ✅ 为 Code、VS Code、Web 增加独立 HOME/data/extensions/session、代理参数和 Web 网络保护参数的无 GUI 回归测试；真实回归脚本已覆盖 Code、VS Code、Web 的后代进程、代理端口、lsof 和验证结论，Web 与 Code 已在本机通过，VS Code 仍需在安装客户端的机器上执行。
 
-## P2：Desktop 强隔离 PoC
+## P1：Desktop Lite 真实回归
 
-优先评估 Tart/Apple VM。已加入只读检查和显式 `prepare/run/verify/stop` 的 PoC 脚本
-[`tests/desktop_tart_poc.sh`](../tests/desktop_tart_poc.sh)，并记录当前主机具备 Apple
-Virtualization.framework、但尚未安装 Tart 或下载镜像。下一步是在安装 Tart 后完成 VM
-内网络网关、DNS/IPv6、PF fail-closed 和启动恢复的实测，再决定是否实现
-`DesktopBackend::Vm`。在 PoC 完成前，Desktop 不改变 `UNSUPPORTED` 标记。
+1. 在安装 Claude.app 的主机执行 Desktop 正常启动和独立目录检查。
+2. 停止上游代理，确认 `/api/security/desktop` 进入 `BLOCKED`，Desktop 外部连接超时。
+3. 恢复代理，确认 PF 自动回到 `allowed`，Desktop 可以重新访问并回到网络 `PASS`。
+4. 检查递归 `lsof`、孤儿 helper 清理、启动失败回滚和 `/api/status`/安全结论一致。
+
+## P2：Desktop VM 强隔离（可选）
+
+保留 [`tests/desktop_tart_poc.sh`](../tests/desktop_tart_poc.sh) 作为可选 PoC。当前已删除
+约 51GB Tart 镜像和临时 VM，不把 VM 作为 Desktop Lite 的运行前置；只有在确实需要
+VM 级 CoreLocation/系统边界时再重新准备镜像并实现 `DesktopBackend::Vm`。
 
 ## 发布门槛
 
