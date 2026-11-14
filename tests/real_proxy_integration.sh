@@ -133,8 +133,13 @@ PY
 
   if [[ "$kind" == "web" ]]; then
     assert_contains "$kind proxy" '--proxy-server=socks5://127.0.0.1:7891' "$process_tree_cmd"
-    assert_contains "$kind session dir" "--user-data-dir=$HOME/.cim/instances/web/sessions/" "$process_tree_cmd"
+    # The browser profile is persistent so Claude/Cloudflare cookies survive a
+    # restart.  A separate per-launch marker remains transient and is used for
+    # orphan cleanup without deleting the persistent profile.
+    assert_contains "$kind profile dir" "--user-data-dir=$HOME/.cim/instances/web/profile" "$process_tree_cmd"
+    assert_contains "$kind session marker" "--cim-session-dir=$HOME/.cim/instances/web/sessions/" "$process_tree_cmd"
     assert_contains "$kind language" "--lang=$expected_lang" "$process_tree_cmd"
+    assert_contains "$kind Chrome warning suppression" '--test-type=webdriver' "$process_tree_cmd"
     assert_contains "$kind WebRTC guard" '--force-webrtc-ip-handling-policy=disable_non_proxied_udp' "$process_tree_cmd"
     assert_contains "$kind QUIC guard" '--disable-quic' "$process_tree_cmd"
   elif [[ "$kind" == "code" ]]; then

@@ -85,9 +85,17 @@
 - 2026-11-12 最终验收：CDP WebRTC ICE 仅产生本地 mDNS host 候选，无公网 `srflx/relay` 候选；IPv6-only 站点返回 `ERR_CONNECTION_RESET`，未形成 IPv6 直连但当前上游不支持该访问路径。
 - 2026-11-12 代理断开恢复：停止 sing-box 后状态进入 `proxy healthy=false`、`firewall.mode=blocked`，实例 helper 的无代理 `1.1.1.1:443` 请求以 curl 28 超时；重启代理后自动恢复 `healthy=true`、`firewall.mode=allowed`，Web 验证保持 `direct=0`。
 - 2026-11-13 已完成 Web 专属 root tcpdump：在 `en0` 上抓包 60 秒捕获 10 个 UDP/53 包，但没有 CIM Web 唯一随机探测域名；Web 进程树 `udp53=0`，外部连接仍到 `127.0.0.1:7891`。抓包同时确认主机其他应用仍会访问 `114.114.114.114:53`，因此结论限定为 Web 实例无观察到 DNS 直连，整机仍存在其他应用 DNS。
+- 2026-11-14 Cage 风格轻量检查上线：`/api/security/web.check_matrix` 返回出口/GeoIP、PF fail-closed、进程连接、浏览器策略、独立目录和证据时效；DNS/WebRTC/IPv6 未主动采样时明确返回 `not_sampled`。
+- 2026-11-14 新版 PF 规则安装并实测：健康态规则为“仅代理放行”（TCP `127.0.0.1/::1:7890/7891`，其余出站阻断），故障态为全部协议阻断；真实 Web 样本 `proxied=11, local=19, direct=0`，安全矩阵为 `PASS`，代理故障脚本通过阻断、新实例拒绝启动和恢复后自动放行。
+- Web Chrome 启动加入 `--test-type=webdriver`，保留 host-resolver DNS 防泄漏规则并抑制“不受支持的命令行标记”提示；Cloudflare 的 “Just a moment” 人机校验仍由站点根据出口 IP、网络延迟和浏览器风险策略决定，不作为本地安全验证失败。
+- Web 持久化 profile 已固定在 `~/.cim/instances/web/profile`，临时 `sessions/<uuid>` 只用于进程清理；Web 保留当前用户 macOS HOME/钥匙串搜索列表，避免 Chrome 因私有 HOME 弹出“找不到用于储存 Chrome 的钥匙串”，数据隔离仍由独立 `--user-data-dir`、cimgrp 和 PF fail-closed 提供。
+- Web 启动会同步持久化 Chrome `intl.selected_languages`/`accept_languages`，并在 Claude 首次文档加载前更新 `spa:locale`、`spa:locale-source` 和 `signin-locale`；因此出口 GeoIP 为 `en-US` 时，stop/start 或 daemon 重启后页面仍保持英文，不再被旧的 `zh-Hans` 站点偏好覆盖。
+- 2026-11-14 CIM Web 登录验收：在隔离 profile 内完成 Claude 的 Google OAuth、滑块人机验证和 Google Authenticator 两步验证，成功进入 Claude onboarding；登录后 `/api/status` 仍为 `validation=pass`（`proxied=1, local=1, direct=0`），`/api/security/web` 返回 `verdict=PASS`、`workspace_scope=isolated_profile`、PF `enforced`。本次证明登录链路与进程级代理隔离有效，DNS/WebRTC/IPv6 仍按 API 的 `not_sampled` 限制解释。
 - 钥匙串授权已简化：守护进程现在优先读取权限为 0600 的现有 sing-box 配置，只有首次迁移或配置缺密码时才调用 `security`；普通 launchd 重启和 release 更新不再重复触发 `com.cim.proxy` 弹窗。
 - App 管理授权已改为固定签名流程：安装和重启脚本复用本机签名身份，并用固定 `com.cim.daemon` identifier 签名，避免 ad-hoc cdhash 随每次编译变化。首次切换到新签名需在 macOS 设置中确认一次。
-- P0/P1 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏；Code/VS Code/Web 分别按 HOME、user-data/extensions 和 session marker 发现进程，停止与 daemon 重启会清理孤儿 helper 和残留目录。
+- P0/P1 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏；Code/VS Code/Web 分别按 HOME、user-data/extensions 和 session marker 发现进程，停止与 daemon 重启会清理孤儿 helper 和残留目录。Web 额外使用 `~/.cim/instances/web/profile` 的 0700 持久化独立 profile 保留登录和 Cloudflare clearance Cookie，`sessions/<uuid>` 仅作临时进程 marker，停止时不删除 profile。
+- Cage 风格轻量检查已接入：`/api/security/web.check_matrix` 分离出口/GeoIP、PF fail-closed、进程连接、浏览器策略、独立目录、证据时效、DNS、WebRTC 和 IPv6；`not_sampled`、`pending`、`expired` 不再被当作 PASS。
+- PF 健康态已改为“只允许 `127.0.0.1/::1:7890/7891`，其余出站阻断”，故障态阻断全部 IP 协议，避免清空 anchor 后出现 daemon 重启直连窗口。更新代码后需要重新执行 `cim install-firewall` 落盘 `.allow` 规则。
 
 ---
 
@@ -156,6 +164,8 @@
 1. 在安装 VS Code 的主机执行 `CIM_REAL_PROXY_INSTANCES=vscode` 真实回归。
 2. 在安装 Claude.app 的主机完成 Desktop Lite 正常、断代理阻断、恢复放行和递归 lsof 回归；Tart 镜像已删除，VM 仅作为可选 P2。
 3. 继续维护 PF、GeoIP 和实例进程回归证据。
+4. 重装新版 PF 规则后，复测健康态代理访问、代理断开阻断、恢复放行以及 daemon 强制重启窗口。
+5. 将一次性 DNS/tcpdump、WebRTC CDP 和 IPv6-only 主动探测结果接入 `check_matrix`，未采样继续保持 UNKNOWN。
 
 已完成的基础项：
 
@@ -165,8 +175,7 @@
    - 实测杀掉 daemon 管理的 sing-box 后，`/api/status` 在约 2 秒内变为
      `proxy.healthy=false`、`firewall.mode=blocked`；带 `cimgrp` 的真实公网直连超时。
    - 调用 `/api/proxy/restart` 后，出口 IP/GeoIP 恢复，`firewall.mode=allowed`，同一组直连恢复。
-   - 已安装 `/etc/sudoers.d/cim_pf` 的 4 条精确授权，并由 `gui/501/com.cim.daemon`
-     launchd 服务在清掉 sudo 缓存后完成了阻断/恢复演练。
+   - 已安装 `/etc/sudoers.d/cim_pf` 的精确授权；新版还需要补充 `.allow` 规则加载、PF state 清理和对应语法检查授权，完成后再由 `gui/501/com.cim.daemon` 做阻断/恢复演练。
 
 - **实例级 PF 启动器** ✅ 2026-11-11
    - 安装 root-owned `/usr/local/libexec/cim-instance-launch`，启动前设置用户 supplementary

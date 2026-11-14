@@ -21,7 +21,7 @@ cim install-firewall
 ~~~
 
 该命令会创建 cimgrp（或配置中的 isolation_group）、写入
-/etc/pf.anchors/com.cim.block 并做语法检查。它需要可用的 sudo 权限；
+`/etc/pf.anchors/com.cim.block` 和 `/etc/pf.anchors/com.cim.allow` 并做语法检查。正常态规则也会阻断直连，只允许实例连接本地 CIM 代理端口。它需要可用的 sudo 权限；
 主机级 `/etc/pf.conf` anchor 仍需管理员显式安装并重新加载。
 
 ### 2. 创建辅助组（手工安装时）
@@ -35,7 +35,9 @@ sudo dscl . -create /Groups/cimgrp RealName "CIM Isolation Group"
 
 ```bash
 sudo cp pf.block.example /etc/pf.anchors/com.cim.block
+sudo cp pf.allow.example /etc/pf.anchors/com.cim.allow
 sudo chmod 644 /etc/pf.anchors/com.cim.block
+sudo chmod 644 /etc/pf.anchors/com.cim.allow
 ```
 
 ### 4. 配置主 PF 文件
@@ -68,9 +70,11 @@ sudo visudo
 
 ```sudoers
 youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
-youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -F rules
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -f /etc/pf.anchors/com.cim.allow
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -F states
 youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -a com.cim -s rules
 youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -nf /etc/pf.anchors/com.cim.block
+youzhisan ALL=(root) NOPASSWD: /sbin/pfctl -nf /etc/pf.anchors/com.cim.allow
 youzhisan ALL=(root) SETENV: NOPASSWD: /usr/local/libexec/cim-instance-launch *
 ```
 
@@ -94,9 +98,8 @@ sudo pfctl -a com.cim -s rules
 
 ### 正常态 (allow)
 
-代理健康并完成出口 IP/GeoIP 解析后，CIM 执行 pfctl -a com.cim -F rules
-清空自身 anchor，实例可访问本地 127.0.0.1:7890/7891，验证由 lsof
-进程级检测完成。
+代理健康并完成出口 IP/GeoIP 解析后，CIM 加载 `com.cim.allow`。该规则只允许
+实例连接 `127.0.0.1/::1:7890/7891`，直连公网、局域网和宿主其他回环服务仍被阻断。
 
 ### 故障态 (block)
 
@@ -106,17 +109,17 @@ sudo pfctl -a com.cim -s rules
 sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.block
 ```
 
-此规则集阻断有效 GID 为 cimgrp 的进程的所有非本地 TCP/UDP 出站连接，只保留回环，
-因此实例无法在代理断开后直连。CIM 通过 root-owned `cim-instance-launch`
+此规则集阻断有效 GID 为 cimgrp 的进程的所有出站协议，包括代理回环端口，
+因此实例无法在代理断开后继续建立连接。CIM 通过 root-owned `cim-instance-launch`
 先初始化用户组，再降权到实例用户和 cimgrp 后 exec；sing-box 和 daemon 继续以普通用户
 运行，不会被该组规则拦截。
 
 ### 恢复
 
-代理恢复并通过出口探测后，切回 allow 状态：
+代理恢复并通过出口探测后，切回仅代理 allow 状态：
 
 ```bash
-sudo pfctl -a com.cim -F rules
+sudo pfctl -a com.cim -f /etc/pf.anchors/com.cim.allow
 ```
 
 ## 兼容性注意

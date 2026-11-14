@@ -23,7 +23,7 @@
 1. ✅ 统一启动失败回滚：终止已启动进程、删除本次 Web session 目录、恢复 runtime 状态；回滚不修改代理健康状态。
 2. ✅ 停止流程使用两阶段 SIGTERM/SIGKILL，并清理实例进程树；按唯一 session marker 清理脱离父进程的 Chrome helper 已补精确匹配、detached helper 验收测试和 daemon 启动时的残留 session 清理。
 3. ✅ 统一验证结论：verifier 输出 `direct=0`、`proxied`、直接端点、检查时间和失败原因；PF 状态继续由全局 firewall 结论提供。
-4. ✅ 为 Code、VS Code、Web 增加独立 HOME/data/extensions/session、代理参数和 Web 网络保护参数的无 GUI 回归测试；真实回归脚本已覆盖 Code、VS Code、Web 的后代进程、代理端口、lsof 和验证结论，Web 与 Code 已在本机通过，VS Code 仍需在安装客户端的机器上执行。
+4. ✅ 为 Code、VS Code、Web 增加独立 HOME/data/extensions/session、代理参数和 Web 网络保护参数的无 GUI 回归测试；Web 使用持久化独立 profile、临时 session marker 和 stop/start 回归，真实回归脚本已覆盖后代进程、代理端口、lsof 和验证结论，Web 与 Code 已在本机通过，VS Code 仍需在安装客户端的机器上执行。
 
 ## P1：Desktop Lite 真实回归
 
@@ -40,7 +40,7 @@ VM 级 CoreLocation/系统边界时再重新准备镜像并实现 `DesktopBacken
 
 ## 发布门槛
 
-- 重启 daemon 后没有孤儿实例和残留 session；Web 启动前也会清理未登记的 session marker 目录及其 helper。
+- 重启 daemon 后没有孤儿实例和残留 session；Web 启动前也会清理未登记的 session marker 目录及其 helper，同时保留持久化 profile。
 - 代理失效后 5 秒内 PF 进入 blocked，新实例拒绝启动。
 - 代理恢复后 PF 自动 allowed，实例可重新启动并恢复验证。
 - Web：`direct=0`、无 UDP/53、公网 WebRTC candidate 和 IPv6 外连。

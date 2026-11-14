@@ -14,11 +14,20 @@ use tracing::{info, warn};
 
 const BLOCK_RULES: &str = r#"# CIM fail-closed rules.
 # Instances are launched with the cimgrp effective group.
-# Only the local HTTP/SOCKS listeners remain reachable while blocked.
-block return out quick proto { tcp udp } from any to !127.0.0.0/8 group cimgrp
-block return out quick proto { tcp udp } from any to !::1 group cimgrp
-pass out quick proto { tcp udp } from any to 127.0.0.0/8 group cimgrp
-pass out quick proto { tcp udp } from any to ::1 group cimgrp
+# A blocked instance cannot reach the host, LAN or internet, including
+# non-TCP/UDP protocols. The proxy loopback ports are also closed while
+# the upstream proxy is unhealthy.
+block return out quick from any to any group cimgrp
+"#;
+
+const ALLOW_RULES_TEMPLATE: &str = r#"# CIM healthy-state rules.
+# Direct egress remains blocked even while the upstream proxy is healthy.
+# The only permitted destination is the local CIM HTTP/SOCKS gateway.
+pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp
+pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp
+pass out quick proto tcp from any to ::1 port 7890 group cimgrp
+pass out quick proto tcp from any to ::1 port 7891 group cimgrp
+block return out quick from any to any group cimgrp
 "#;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -51,6 +60,7 @@ struct FirewallState {
 pub struct FirewallController {
     config: FirewallConfig,
     block_rules_path: PathBuf,
+    allow_rules_path: PathBuf,
     state: Arc<Mutex<FirewallState>>,
 }
 
@@ -62,10 +72,21 @@ impl FirewallController {
         } else {
             PathBuf::from(format!("{}.block", config.rules_path))
         };
-        let installed = Self::probe_anchor(&config.anchor_name);
+        let allow_rules_path = if config.rules_path.ends_with(".block") {
+            PathBuf::from(format!(
+                "{}.allow",
+                config.rules_path.trim_end_matches(".block")
+            ))
+        } else {
+            PathBuf::from(format!("{}.allow", config.rules_path))
+        };
+        let installed = Self::probe_anchor(&config.anchor_name)
+            && block_rules_path.exists()
+            && allow_rules_path.exists();
         Self {
             config,
             block_rules_path,
+            allow_rules_path,
             state: Arc::new(Mutex::new(FirewallState {
                 installed,
                 mode: if installed {
@@ -85,7 +106,7 @@ impl FirewallController {
             mode: state.mode,
             status: match state.mode {
                 FirewallMode::Unavailable => "软隔离模式".to_string(),
-                FirewallMode::Allowed => "PF 已安装 · 放行态".to_string(),
+                FirewallMode::Allowed => "PF 已安装 · 仅代理放行".to_string(),
                 FirewallMode::Blocked => "PF 已安装 · 故障阻断".to_string(),
             },
             anchor: self.config.anchor_name.clone(),
@@ -96,6 +117,10 @@ impl FirewallController {
 
     pub fn block_rules_path(&self) -> &Path {
         &self.block_rules_path
+    }
+
+    pub fn allow_rules_path(&self) -> &Path {
+        &self.allow_rules_path
     }
 
     /// Load the block rules into the CIM anchor. If PF is not installed or
@@ -115,6 +140,22 @@ impl FirewallController {
         if !output.status.success() {
             return self.record_error(format_command_error("load PF block rules", &output));
         }
+        // Drop states created under the previous healthy anchor. Otherwise a
+        // connection that was already established could survive the rule
+        // transition until its normal timeout.
+        match run_privileged(&["pfctl", "-a", &self.config.anchor_name, "-F", "states"]) {
+            Ok(states) if states.status.success() => {}
+            Ok(states) => warn!(
+                anchor = %self.config.anchor_name,
+                error = %format_command_error("flush PF states", &states),
+                "PF rules blocked but existing states could not be flushed"
+            ),
+            Err(error) => warn!(
+                anchor = %self.config.anchor_name,
+                error = %error,
+                "PF rules blocked but existing states could not be flushed"
+            ),
+        }
         self.update_state(true, FirewallMode::Blocked, None);
         info!(anchor = %self.config.anchor_name, "PF fail-closed rules enabled");
         Ok(())
@@ -126,12 +167,21 @@ impl FirewallController {
         if !self.is_ready() {
             return Ok(());
         }
-        let output = run_privileged(&["pfctl", "-a", &self.config.anchor_name, "-F", "rules"])?;
+        // Keep a restrictive anchor loaded in healthy state. Clearing the
+        // anchor would leave a crash/restart window in which instances could
+        // connect directly before the daemon re-applies the block rules.
+        let output = run_privileged(&[
+            "pfctl",
+            "-a",
+            &self.config.anchor_name,
+            "-f",
+            self.allow_rules_path.to_string_lossy().as_ref(),
+        ])?;
         if !output.status.success() {
-            return self.record_error(format_command_error("clear PF block rules", &output));
+            return self.record_error(format_command_error("load PF allow rules", &output));
         }
         self.update_state(true, FirewallMode::Allowed, None);
-        info!(anchor = %self.config.anchor_name, "PF fail-closed rules cleared");
+        info!(anchor = %self.config.anchor_name, "PF fail-closed rules switched to proxy-only allow state");
         Ok(())
     }
 
@@ -140,8 +190,11 @@ impl FirewallController {
     /// administrator step because editing /etc/pf.conf is host-wide.
     pub fn install(&self) -> Result<()> {
         let temp = std::env::temp_dir().join(format!("cim-pf-{}.block", std::process::id()));
+        let allow_temp = std::env::temp_dir().join(format!("cim-pf-{}.allow", std::process::id()));
         let rules = BLOCK_RULES.replace("cimgrp", &self.config.isolation_group);
+        let allow_rules = ALLOW_RULES_TEMPLATE.replace("cimgrp", &self.config.isolation_group);
         std::fs::write(&temp, rules)?;
+        std::fs::write(&allow_temp, allow_rules)?;
 
         let parent = self
             .block_rules_path
@@ -150,6 +203,7 @@ impl FirewallController {
         let mkdir = run_privileged(&["mkdir", "-p", parent.to_string_lossy().as_ref()])?;
         if !mkdir.status.success() {
             let _ = std::fs::remove_file(&temp);
+            let _ = std::fs::remove_file(&allow_temp);
             return Err(anyhow::anyhow!(format_command_error(
                 "create PF anchor directory",
                 &mkdir
@@ -165,9 +219,25 @@ impl FirewallController {
         ])?;
         let _ = std::fs::remove_file(&temp);
         if !install.status.success() {
+            let _ = std::fs::remove_file(&allow_temp);
             return Err(anyhow::anyhow!(format_command_error(
                 "install PF block rules",
                 &install
+            )));
+        }
+
+        let allow_install = run_privileged(&[
+            "install",
+            "-m",
+            "0644",
+            allow_temp.to_string_lossy().as_ref(),
+            self.allow_rules_path.to_string_lossy().as_ref(),
+        ])?;
+        let _ = std::fs::remove_file(&allow_temp);
+        if !allow_install.status.success() {
+            return Err(anyhow::anyhow!(format_command_error(
+                "install PF allow rules",
+                &allow_install
             )));
         }
 
@@ -220,13 +290,26 @@ impl FirewallController {
                 &check
             )));
         }
+        let allow_check = run_privileged(&[
+            "pfctl",
+            "-nf",
+            self.allow_rules_path.to_string_lossy().as_ref(),
+        ])?;
+        if !allow_check.status.success() {
+            return Err(anyhow::anyhow!(format_command_error(
+                "validate PF allow rules",
+                &allow_check
+            )));
+        }
         self.update_state(true, FirewallMode::Allowed, None);
         Ok(())
     }
 
     fn is_ready(&self) -> bool {
         let state = self.state.lock().unwrap();
-        state.installed && self.block_rules_path.exists()
+        // Both fixed rule files must exist so launchd can use the narrow
+        // sudoers entries without granting pfctl access to arbitrary paths.
+        state.installed && self.block_rules_path.exists() && self.allow_rules_path.exists()
     }
 
     fn update_state(&self, installed: bool, mode: FirewallMode, error: Option<String>) {
@@ -283,5 +366,29 @@ fn format_command_error(action: &str, output: &Output) -> String {
         format!("{} (exit status {})", action, output.status)
     } else {
         format!("{}: {}", action, stderr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALLOW_RULES_TEMPLATE, BLOCK_RULES};
+
+    #[test]
+    fn healthy_rules_keep_direct_egress_blocked() {
+        assert!(ALLOW_RULES_TEMPLATE.contains("127.0.0.1 port 7890"));
+        assert!(ALLOW_RULES_TEMPLATE.contains("127.0.0.1 port 7891"));
+        assert!(ALLOW_RULES_TEMPLATE.contains("::1 port 7890"));
+        assert!(ALLOW_RULES_TEMPLATE.contains("::1 port 7891"));
+        assert!(
+            ALLOW_RULES_TEMPLATE.contains("block return out quick from any to any group cimgrp")
+        );
+        assert!(!ALLOW_RULES_TEMPLATE.contains("127.0.0.0/8"));
+    }
+
+    #[test]
+    fn blocked_rules_cover_all_ip_protocols() {
+        assert!(BLOCK_RULES.contains("block return out quick from any to any group cimgrp"));
+        assert!(!BLOCK_RULES.contains("proto tcp"));
+        assert!(!BLOCK_RULES.contains("proto udp"));
     }
 }

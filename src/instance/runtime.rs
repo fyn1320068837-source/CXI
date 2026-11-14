@@ -144,7 +144,7 @@ impl LaunchTransaction {
         };
         let pids = self.adapter.process_tree(&handle).await;
         let stop_result = self.adapter.stop(&handle).await;
-        // Adapters own normal cleanup (including Web session directories),
+        // Adapters own normal cleanup (including Web session markers),
         // while this best-effort pass covers helpers that detach during stop.
         // Invalid test or stale PIDs are filtered before converting to libc
         // process IDs.

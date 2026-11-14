@@ -799,9 +799,10 @@ function renderSecurity(s) {
         `代理 ${web.proxied ?? '—'} · 本地 ${web.local ?? '—'} · 直连 ${web.direct ?? '—'} · 进程 ${web.checked_pids ?? '—'}`;
     document.getElementById('security-network').textContent =
         `${s.proxy?.healthy ? '代理正常' : '代理异常'} · GeoIP ${s.proxy?.geo_ready ? '就绪' : '未就绪'} · PF ${s.firewall?.mode || '—'}`;
-    const checks = s.checks || {};
+    const matrix = s.check_matrix || {};
+    const matrixStatus = (name, fallback = '—') => matrix[name]?.status || fallback;
     document.getElementById('security-checks').textContent =
-        `UDP53 ${checks.udp53 === 'not_sampled' ? '未持续采样' : checks.udp53} · WebRTC ${checks.webrtc_public_candidates === 'not_sampled' ? '未持续采样' : checks.webrtc_public_candidates} · IPv6 ${checks.ipv6_direct === 'not_sampled' ? '未持续采样' : checks.ipv6_direct}`;
+        `出口 ${matrixStatus('proxy_and_exit')} · PF ${matrixStatus('proxy_fail_closed')} · 连接 ${matrixStatus('process_connections')} · DNS ${matrixStatus('dns_udp53')} · WebRTC ${matrixStatus('webrtc_public_candidates')} · IPv6 ${matrixStatus('ipv6_direct')}`;
     const reasons = s.reasons || [];
     document.getElementById('security-reasons').textContent = reasons.length ? `状态：${reasons.join('；')}` : '状态：未发现直连证据';
     const limitations = s.limitations || [];

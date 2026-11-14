@@ -56,7 +56,8 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 ```
 
 提供内核级断线保护（PF anchor，按 `cimgrp` 组阻断）。安装命令会写入
-`/etc/pf.anchors/com.cim.block`；还需要按输出提示把 anchor 加入 `/etc/pf.conf`。
+`/etc/pf.anchors/com.cim.block` 和 `/etc/pf.anchors/com.cim.allow`；正常态也只允许
+实例连接本地 `127.0.0.1/::1:7890/7891`，不会放开实例直连。还需要按输出提示把 anchor 加入 `/etc/pf.conf`。
 未安装时 CIM 拒绝启动受管实例，避免退化为可直连的软隔离模式。
 
 ---
@@ -102,7 +103,9 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 └── instances/
     ├── code/                 # A 实例 HOME
     ├── vscode/               # C 实例 user-data + extensions
-    ├── web/                  # D 实例 user-data-dir
+    ├── web/                  # D 实例隔离目录
+    │   ├── profile/          # 持久化 Chrome 配置、登录态和站点 Cookie（0700）
+    │   └── sessions/         # 每次启动的临时进程清理标记
     └── desktop/              # B 实例 Desktop Lite 独立目录
 ```
 
@@ -137,6 +140,8 @@ WS   /ws                                实时状态推送
 - **HTTP 仅本地**：API 只绑 `127.0.0.1`，不对外暴露
 
 Web 出口泄漏的判定方法、现场命令和证据边界见 [`docs/web-leak-evaluation.md`](docs/web-leak-evaluation.md)。请求 URL 日志只说明访问目标，是否经过代理以 `/api/status` 的进程级 lsof 证据为准。
+
+Cage 风格的轻量检查映射见 [`docs/cage-lite-checks.md`](docs/cage-lite-checks.md)。控制台会把出口、PF、进程连接、浏览器策略、目录范围和证据时效分开显示；DNS、WebRTC、IPv6 未主动采样时保持 `not_sampled`，不会被当作 PASS。
 
 后续结构整理顺序见 [`docs/next-plan.md`](docs/next-plan.md)，实例隔离分层和 Desktop VM PoC 见 [`docs/instance-isolation-plan.md`](docs/instance-isolation-plan.md)。
 Desktop 的 Tart/Apple VM PoC 操作和阶段验收见 [`docs/desktop-tart-poc.md`](docs/desktop-tart-poc.md)。

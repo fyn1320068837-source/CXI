@@ -8,18 +8,26 @@ echo "=== M0.2 PF 规则语法验证 ==="
 echo ""
 
 echo "步骤 1: 创建测试规则文件..."
-cat > /tmp/pf-test.conf << 'EOF'
-# 测试规则: 阻断指定组的公网连接
-block return out quick proto tcp from any to !127.0.0.0/8 group cimgrp
-block return out quick proto udp from any to !127.0.0.0/8 group cimgrp
+cat > /tmp/pf-test-block.conf << 'EOF'
+# 故障态：阻断指定组的全部出站协议
+block return out quick from any to any group cimgrp
+EOF
+cat > /tmp/pf-test-allow.conf << 'EOF'
+# 正常态：只允许访问本地 CIM 代理端口，其他出站仍阻断
+pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp
+pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp
+pass out quick proto tcp from any to ::1 port 7890 group cimgrp
+pass out quick proto tcp from any to ::1 port 7891 group cimgrp
+block return out quick from any to any group cimgrp
 EOF
 
 echo "✓ 规则文件已创建"
-cat /tmp/pf-test.conf
+cat /tmp/pf-test-block.conf
+cat /tmp/pf-test-allow.conf
 echo ""
 
 echo "步骤 2: 验证 PF 规则语法..."
-if pfctl -nf /tmp/pf-test.conf 2>&1; then
+if pfctl -nf /tmp/pf-test-block.conf 2>&1 && pfctl -nf /tmp/pf-test-allow.conf 2>&1; then
     echo ""
     echo "✓ PF 规则语法正确"
     echo ""
@@ -35,7 +43,7 @@ else
     echo "需要评估降级方案"
 fi
 
-rm /tmp/pf-test.conf
+rm /tmp/pf-test-block.conf /tmp/pf-test-allow.conf
 
 echo ""
 echo "注意: 完整测试需要 sudo 权限创建组并加载规则"

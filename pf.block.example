@@ -2,12 +2,6 @@
 # /etc/pf.anchors/com.cim.block
 # 阻断 cimgrp 组的新建公网连接
 
-# 阻断除本地回环外的 TCP/UDP 出站连接
-block return out quick proto tcp from any to !127.0.0.0/8 group cimgrp
-block return out quick proto udp from any to !127.0.0.0/8 group cimgrp
-block return out quick proto tcp from any to !::1 group cimgrp
-block return out quick proto udp from any to !::1 group cimgrp
-
-# 仅允许实例访问本地 HTTP/SOCKS 代理监听端口
-pass out quick proto {tcp udp} from any to 127.0.0.0/8
-pass out quick proto {tcp udp} from any to ::1
+# 阻断 cimgrp 的所有出站连接，包括代理回环端口。
+# 代理故障时实例不能继续建立任何新连接。
+block return out quick from any to any group cimgrp

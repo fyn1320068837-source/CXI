@@ -2,10 +2,17 @@ use super::*;
 
 /// Chromium normally keeps every helper below the browser root, but a helper
 /// can be briefly reparented during a crash or restart. Match the unique
-/// per-launch user-data directory as a second signal so validation still
-/// covers that helper while never sweeping in another browser profile.
+/// exact user-data directory or CIM session marker so validation and cleanup
+/// still cover that helper while never sweeping in another browser profile.
 fn command_uses_session_dir(command: &str, session_dir: &str) -> bool {
     let marker = format!("--user-data-dir={session_dir}");
+    command
+        .split_whitespace()
+        .any(|argument| argument == marker)
+}
+
+fn command_uses_session_marker(command: &str, session_dir: &str) -> bool {
+    let marker = format!("--cim-session-dir={session_dir}");
     command
         .split_whitespace()
         .any(|argument| argument == marker)
@@ -18,7 +25,9 @@ fn parse_session_processes(output: &str, session_dir: &str) -> Vec<u32> {
             let mut fields = line.split_whitespace();
             let pid = fields.next()?;
             let command = fields.collect::<Vec<_>>().join(" ");
-            if !command_uses_session_dir(&command, session_dir) {
+            if !command_uses_session_dir(&command, session_dir)
+                && !command_uses_session_marker(&command, session_dir)
+            {
                 return None;
             }
             pid.trim().parse().ok()
@@ -32,6 +41,25 @@ pub(super) fn processes_using_session_dir(session_dir: &str) -> Vec<u32> {
     };
 
     parse_session_processes(&String::from_utf8_lossy(&output.stdout), session_dir)
+}
+
+pub(super) fn processes_using_session_marker(session_dir: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
+        return Vec::new();
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let command = fields.collect::<Vec<_>>().join(" ");
+            if !command_uses_session_marker(&command, session_dir) {
+                return None;
+            }
+            pid.trim().parse().ok()
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -82,7 +110,10 @@ pub(super) async fn apply_browser_profile(
     // the host redirect these control requests through another proxy.
     let client = reqwest::Client::builder().no_proxy().build()?;
     let endpoint = format!("http://127.0.0.1:{}/json/list", port);
-    let target = tokio::time::timeout(Duration::from_secs(8), async {
+    // A persistent profile may need to replay migrations, restore cookies and
+    // start Chrome's helper tree before the first page target appears. Keep
+    // the browser launch transactional, but allow that cold-start window.
+    let target = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if let Ok(response) = client.get(&endpoint).send().await {
                 if let Ok(targets) = response.json::<Vec<DevToolsTarget>>().await {
@@ -189,6 +220,27 @@ pub(super) async fn apply_browser_profile(
         command_id += 1;
     }
 
+    if let Some(language) = profile.language.as_deref() {
+        // Keep Claude's own persisted locale aligned with the current exit
+        // profile. The page may have been restored from a previous Chrome
+        // session, so the new-document hook alone is not sufficient here.
+        send_cdp_command(
+            &mut socket,
+            command_id,
+            "Network.setCookie",
+            json!({
+                "name": "signin-locale",
+                "value": language,
+                "url": "https://claude.ai/",
+                "path": "/",
+                "secure": true,
+                "sameSite": "Lax"
+            }),
+        )
+        .await?;
+        command_id += 1;
+    }
+
     if let Some(timezone) = profile.timezone.as_deref() {
         send_cdp_command(
             &mut socket,
@@ -227,6 +279,32 @@ pub(super) async fn apply_browser_profile(
         json!({"url": "https://claude.ai"}),
     )
     .await?;
+
+    if let Some(language) = profile.language.as_deref() {
+        // Give the restored target a short chance to become the Claude
+        // document, then update its storage and reload once. This fixes a
+        // persisted site preference before Claude's app selects its UI copy.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let locale_script = language_override_script(language);
+        send_cdp_command(
+            &mut socket,
+            command_id,
+            "Runtime.evaluate",
+            json!({"expression": locale_script, "returnByValue": true}),
+        )
+        .await?;
+        command_id += 1;
+        send_cdp_command(&mut socket, command_id, "Page.reload", json!({})).await?;
+        command_id += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        send_cdp_command(
+            &mut socket,
+            command_id,
+            "Runtime.evaluate",
+            json!({"expression": language_override_script(language), "returnByValue": true}),
+        )
+        .await?;
+    }
 
     tracing::debug!(port, "Browser locale/timezone profile applied");
     Ok(BrowserProfileSession { socket, target_id })
@@ -554,6 +632,17 @@ async fn configure_attached_page(
             Some(session_id),
             "Page.addScriptToEvaluateOnNewDocument",
             json!({"source": language_override_script(language)}),
+        )
+        .await?;
+        send_target_command(
+            socket,
+            next_command_id,
+            Some(session_id),
+            "Runtime.evaluate",
+            json!({
+                "expression": language_override_script(language),
+                "returnByValue": true
+            }),
         )
         .await?;
         if let Some(user_agent) = user_agent {
@@ -895,10 +984,26 @@ pub(crate) fn sanitize_request_url(url: &str) -> String {
 
 pub(crate) fn language_override_script(language: &str) -> String {
     let base = language.split('-').next().unwrap_or(language);
+    let app_locale = match language {
+        value if value.eq_ignore_ascii_case("zh-CN") => "zh-Hans",
+        value if value.eq_ignore_ascii_case("zh-TW") => "zh-Hant",
+        value if value.eq_ignore_ascii_case("ja-JP") => "ja",
+        value if value.eq_ignore_ascii_case("ko-KR") => "ko",
+        _ => language,
+    };
     format!(
-        "Object.defineProperty(Navigator.prototype, 'language', {{get: () => {:?}}}); \
-         Object.defineProperty(Navigator.prototype, 'languages', {{get: () => [{:?}, {:?}]}});",
-        language, language, base
+        "(function() {{ \
+            Object.defineProperty(Navigator.prototype, 'language', {{get: () => {:?}}}); \
+            Object.defineProperty(Navigator.prototype, 'languages', {{get: () => [{:?}, {:?}]}}); \
+            try {{ \
+                if (location.origin === 'https://claude.ai' || location.origin === 'https://www.claude.ai') {{ \
+                    localStorage.setItem('spa:locale', {:?}); \
+                    localStorage.setItem('spa:locale-source', 'dynamic'); \
+                    document.cookie = 'signin-locale=' + encodeURIComponent({:?}) + '; Path=/; Secure; SameSite=Lax'; \
+                }} \
+            }} catch (_) {{}} \
+        }})();",
+        language, language, base, app_locale, language
     )
 }
 
@@ -987,7 +1092,10 @@ where
 
 #[cfg(test)]
 mod session_marker_tests {
-    use super::{command_uses_session_dir, parse_session_processes, processes_using_session_dir};
+    use super::{
+        command_uses_session_dir, command_uses_session_marker, parse_session_processes,
+        processes_using_session_dir,
+    };
 
     #[test]
     fn marker_matches_only_the_full_session_path() {
@@ -1004,15 +1112,23 @@ mod session_marker_tests {
             "Chrome --user-data-dir=/tmp/other --type=renderer",
             session
         ));
+        assert!(command_uses_session_marker(
+            "Chrome --user-data-dir=/tmp/cim-web/profile --cim-session-dir=/tmp/cim-web/sessions/abc --type=renderer",
+            session
+        ));
+        assert!(!command_uses_session_marker(
+            "Chrome --cim-session-dir=/tmp/cim-web/sessions/abcd --type=renderer",
+            session
+        ));
     }
 
     #[test]
     fn parser_collects_only_processes_with_exact_session_marker() {
         let session = "/tmp/cim-web/sessions/abc";
         let ps = format!(
-            " 101 Chrome --user-data-dir={session} --type=renderer\n 102 Chrome --user-data-dir={session}d --type=renderer\n 103 /bin/sh -c --user-data-dir=/tmp/other sleep 30\n"
+            " 101 Chrome --user-data-dir={session} --type=renderer\n 102 Chrome --user-data-dir={session}d --type=renderer\n 103 Chrome --user-data-dir=/tmp/cim-web/profile --cim-session-dir={session} --type=renderer\n 104 /bin/sh -c --user-data-dir=/tmp/other sleep 30\n"
         );
-        assert_eq!(parse_session_processes(&ps, session), vec![101]);
+        assert_eq!(parse_session_processes(&ps, session), vec![101, 103]);
     }
 
     #[cfg(unix)]

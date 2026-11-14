@@ -201,6 +201,10 @@ async fn install_firewall() -> Result<()> {
         config.firewall.anchor_name,
         controller.block_rules_path().display()
     );
+    println!(
+        "  healthy-state rules: \"{}\" (proxy ports only; direct egress remains blocked)",
+        controller.allow_rules_path().display()
+    );
 
     Ok(())
 }

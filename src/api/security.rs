@@ -1,6 +1,92 @@
 const SECURITY_EVIDENCE_TTL_SECONDS: i64 = 90;
 const SECURITY_EVIDENCE_MATCH_WINDOW_SECONDS: i64 = 30;
 
+fn evidence_state(has_timestamp: bool, fresh: bool) -> &'static str {
+    if fresh {
+        "fresh"
+    } else if has_timestamp {
+        "expired"
+    } else {
+        "missing"
+    }
+}
+
+fn fail_closed_state(proxy_healthy: bool, installed: bool, mode: &str) -> &'static str {
+    if !installed {
+        return "unavailable";
+    }
+    if (proxy_healthy && mode == "allowed") || (!proxy_healthy && mode == "blocked") {
+        "enforced"
+    } else {
+        "mismatch"
+    }
+}
+
+struct WebCheckInput<'a> {
+    proxy_healthy: bool,
+    geo_ready: bool,
+    firewall_mode: &'a str,
+    firewall_installed: bool,
+    validation_pass: bool,
+    direct_zero: bool,
+    evidence_fresh: bool,
+    web_running: bool,
+    has_timestamp: bool,
+}
+
+fn web_check_matrix(input: WebCheckInput<'_>) -> serde_json::Value {
+    let fail_closed = fail_closed_state(
+        input.proxy_healthy,
+        input.firewall_installed,
+        input.firewall_mode,
+    );
+    serde_json::json!({
+        // These are the checks that can be enforced without a VM. Keep the
+        // evidence source explicit so a configured browser flag is not
+        // confused with packet-level proof.
+        "proxy_and_exit": {
+            "status": if input.proxy_healthy && input.geo_ready { "pass" } else if input.proxy_healthy { "pending" } else { "fail" },
+            "evidence": "sing-box health + GeoIP profile",
+        },
+        "proxy_fail_closed": {
+            "status": fail_closed,
+            "evidence": "PF anchor state + proxy health",
+        },
+        "process_connections": {
+            "status": if !input.web_running { "not_running" } else if input.validation_pass && input.direct_zero { "pass" } else if input.direct_zero { "pending" } else { "fail" },
+            "evidence": "recursive lsof process-tree snapshot",
+        },
+        "browser_policy": {
+            "status": "configured",
+            "evidence": "SOCKS5, host-resolver, WebRTC and QUIC launch policy",
+        },
+        "workspace_scope": {
+            "status": "isolated_profile",
+            "evidence": "per-instance/per-session data directory",
+        },
+        "evidence": {
+            "status": evidence_state(input.has_timestamp, input.evidence_fresh),
+            "scope": "web_process_tree",
+            "source": "lsof",
+        },
+        // These need an active probe or packet capture. Reporting them as
+        // not_sampled is safer than turning a previous successful lsof check
+        // into a blanket VM-style guarantee.
+        "dns_udp53": {
+            "status": "not_sampled",
+            "evidence": "requires active tcpdump/UDP 53 probe",
+        },
+        "webrtc_public_candidates": {
+            "status": "not_sampled",
+            "evidence": "requires active CDP ICE probe",
+        },
+        "ipv6_direct": {
+            "status": "not_sampled",
+            "evidence": "requires active IPv6-only probe",
+        },
+    })
+}
+
 fn parse_detail_count(details: &str, key: &str) -> usize {
     let Some(value) = details
         .split_once(&format!("{key}="))
@@ -141,6 +227,19 @@ async fn get_web_security(
     let has_direct = direct.map(|value| value > 0).unwrap_or(false);
     let has_proxy = proxied.map(|value| value > 0).unwrap_or(false);
     let firewall_mode = format!("{:?}", firewall.mode).to_lowercase();
+    let validation_pass = validation_name == "pass" && evidence_fresh;
+    let direct_zero = direct == Some(0);
+    let check_matrix = web_check_matrix(WebCheckInput {
+        proxy_healthy,
+        geo_ready,
+        firewall_mode: &firewall_mode,
+        firewall_installed: firewall.installed,
+        validation_pass,
+        direct_zero,
+        evidence_fresh,
+        web_running,
+        has_timestamp: evidence.is_some(),
+    });
 
     let mut reasons = Vec::new();
     let verdict = if has_direct || validation_name == "fail" {
@@ -208,11 +307,13 @@ async fn get_web_security(
             "direct": direct,
             "direct_endpoints": direct_items,
         },
+        "scope": "web_process_tree",
+        "check_matrix": check_matrix,
         "checks": {
             "proxy_healthy": proxy_healthy,
             "geo_ready": geo_ready,
-            "validation_pass": validation_name == "pass" && evidence_fresh,
-            "direct_zero": direct == Some(0),
+            "validation_pass": validation_pass,
+            "direct_zero": direct_zero,
             "udp53": "not_sampled",
             "webrtc_public_candidates": "not_sampled",
             "ipv6_direct": "not_sampled",

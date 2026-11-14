@@ -122,7 +122,10 @@ include!("websocket.rs");
 
 #[cfg(test)]
 mod security_tests {
-    use super::{direct_endpoints, parse_checked_pids, parse_detail_count};
+    use super::{
+        direct_endpoints, evidence_state, fail_closed_state, parse_checked_pids,
+        parse_detail_count, web_check_matrix,
+    };
 
     #[test]
     fn parses_network_validation_details() {
@@ -145,5 +148,31 @@ mod security_tests {
         assert_eq!(parse_checked_pids(details), 2);
         assert_eq!(parse_detail_count(details, "direct"), 0);
         assert!(direct_endpoints(details).is_empty());
+    }
+
+    #[test]
+    fn cage_style_check_states_never_promote_missing_evidence_to_pass() {
+        assert_eq!(evidence_state(false, false), "missing");
+        assert_eq!(evidence_state(true, false), "expired");
+        assert_eq!(evidence_state(true, true), "fresh");
+        assert_eq!(fail_closed_state(true, true, "allowed"), "enforced");
+        assert_eq!(fail_closed_state(false, true, "blocked"), "enforced");
+        assert_eq!(fail_closed_state(true, false, "allowed"), "unavailable");
+        assert_eq!(fail_closed_state(true, true, "blocked"), "mismatch");
+
+        let checks = web_check_matrix(super::WebCheckInput {
+            proxy_healthy: true,
+            geo_ready: true,
+            firewall_mode: "allowed",
+            firewall_installed: true,
+            validation_pass: false,
+            direct_zero: true,
+            evidence_fresh: false,
+            web_running: true,
+            has_timestamp: false,
+        });
+        assert_eq!(checks["process_connections"]["status"], "pending");
+        assert_eq!(checks["evidence"]["status"], "missing");
+        assert_eq!(checks["dns_udp53"]["status"], "not_sampled");
     }
 }

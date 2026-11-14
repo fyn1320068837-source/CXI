@@ -17,6 +17,8 @@ Web 请求日志和出口泄漏是两类证据。`/api/logs` 记录浏览器访�
 
 控制台顶部的“Web 安全结论”和 `GET /api/security/web` 使用最新 Web 进程验证证据生成 `PASS`、`FAIL`、`BLOCKED` 或 `UNKNOWN`。它会显示检查年龄、检查 PID、代理/本地/直连计数、PF 状态和限制说明；原始请求 URL 不参与直连判定。
 
+`/api/security/web.check_matrix` 进一步按 Cage 风格拆分检查：`proxy_and_exit`、`proxy_fail_closed`、`process_connections`、`browser_policy`、`workspace_scope`、`evidence`、`dns_udp53`、`webrtc_public_candidates` 和 `ipv6_direct`。其中 `configured`、`isolated_profile`、`pending` 和 `not_sampled` 只表示配置或证据状态，不能单独升级为 `PASS`。
+
 ## 现场检查
 
 ```bash
@@ -32,18 +34,28 @@ tail -f ~/.cim/logs/daemon.log
 ## Web 启动约束
 
 - SOCKS5 固定为 `127.0.0.1:7891`。
-- Chrome 配置了 host resolver 规则并保留本地回环例外；现场递归 lsof 未观察到 Web 进程的 UDP 53。Chrome 仍会显示该参数的“不受支持”提示，最终判断以进程快照和抓包证据为准。
+- Web 使用持久化但独立的 profile：`~/.cim/instances/web/profile`。该目录只属于 CIM Web，权限设为 `0700`，用于保留 Claude 登录态和 Cloudflare clearance Cookie；不会复用用户默认 Chrome profile。
+- Web 保留当前 macOS 用户的 `HOME` 和登录钥匙串搜索列表，仅用于 Chrome Cookie/App-Bound Encryption；浏览器数据仍由独立 `--user-data-dir` 隔离，网络仍由 `cimgrp`/PF fail-closed 约束。
+- 每次启动另外创建 `~/.cim/instances/web/sessions/<uuid>` 作为临时 session marker，并通过 `--cim-session-dir` 写入浏览器命令行。停止、daemon 重启和孤儿清理只删除 marker，不删除持久化 profile；这样可以减少重复人机验证，同时保留实例隔离和可回收的进程标记。
+- 启动前会把持久化 profile 的 `intl.selected_languages`/`accept_languages` 同步到当前 GeoIP 语言；Claude 首次文档加载前还会同步 `spa:locale`、`spa:locale-source` 和 `signin-locale`，避免旧的站点语言偏好在重启后把页面切回中文。
+- Chrome 配置了 host resolver 规则并保留本地回环例外；现场递归 lsof 未观察到 Web 进程的 UDP 53。`--test-type=webdriver` 只隐藏该安全参数的提示，不移除 resolver 规则；最终判断仍以进程快照和抓包证据为准。
+- Web 启动同时加入 `--test-type=webdriver`，只抑制 Chrome 对上述安全启动参数的提示，不移除 host resolver 规则；真实 DNS 和进程连接验证仍按原流程执行。
 - `--disable-quic` 禁止 HTTP/3 走独立 UDP 路径。
 - `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 禁止 WebRTC 使用非代理 UDP。
 - CDP 目标监控会在连接断开后以退避方式重连，并继续接管新标签页和弹窗。
 - sing-box 使用 `https://1.1.1.1/dns-query`，`ipv4_only`，并通过 `upstream` SOCKS 出站访问。
 - Web 进程由 `cim-instance-launch` 加入 `cimgrp`，代理失效时由 PF fail-closed 规则阻断直连。
+- PF 健康态保持 anchor 加载，只允许 `cimgrp` 访问本地 `7890/7891`；故障态阻断该组全部出站协议。这样 daemon 重启时不会因为清空 anchor 而留下直接放行窗口。
 
 ## 已完成的真实复测
 
 真实 SOCKS5 Web 联调已通过：出口 GeoIP profile 解析成功；Web 进程级验证为 `pass`，现场样本为 `checked 11 pids; proxied=14, local=18, direct=0`；递归 lsof 未发现 UDP 53，公网连接均未出现在 Web 进程树中；生成的 sing-box 配置通过 `sing-box check`。
 
 真实集成脚本 `CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=web tests/real_proxy_integration.sh` 现在会额外断言：验证时间存在、`direct=0`、代理连接数大于 0、WebRTC/QUIC 约束参数存在、无 UDP 53，并且历史验证证据为 `pass`。
+
+持久化 profile 的 stop/start 回归使用 `CIM_RUN_REAL_PROXY=1 tests/web_persistent_profile.sh`，验证两次启动使用同一个独立 profile、停止后 profile 目录仍保留，且临时 session marker 可回收。
+
+2026-11-14 在 CIM Web 隔离 profile 内完成一次真实 Claude 登录：Google OAuth、滑块人机验证和 Google Authenticator 两步验证均通过，并进入 Claude onboarding。登录期间 `/api/status` 保持 `validation=pass`（`proxied=1, local=1, direct=0`），`GET /api/security/web` 返回 `verdict=PASS`，独立 profile 与 PF fail-closed 状态保持有效。本次证明登录链路与进程级代理隔离有效；DNS、WebRTC 和 IPv6 仍以接口返回的 `not_sampled` 为准，不扩大结论。
 
 2026-11-13 本轮最终验收补充结果：
 

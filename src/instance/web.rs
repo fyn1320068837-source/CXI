@@ -22,6 +22,7 @@ type BrowserSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 pub struct WebAdapter {
     user_data_dir: String,
+    profile_dir: String,
     geo_profile: SharedGeoProfile,
     request_log_tx: Option<RequestLogSender>,
     sessions: Arc<Mutex<HashMap<u32, String>>>,
@@ -29,8 +30,10 @@ pub struct WebAdapter {
 
 impl WebAdapter {
     pub fn new_with_geo_profile(user_data_dir: String, geo_profile: SharedGeoProfile) -> Self {
+        let profile_dir = format!("{user_data_dir}/profile");
         Self {
             user_data_dir,
+            profile_dir,
             geo_profile,
             request_log_tx: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -81,6 +84,9 @@ mod tests {
         let script = language_override_script("zh-CN");
         assert!(script.contains("zh-CN"));
         assert!(script.contains("zh"));
+        assert!(script.contains("spa:locale"));
+        assert!(script.contains("zh-Hans"));
+        assert!(script.contains("signin-locale"));
         assert!(script.contains("Navigator.prototype"));
     }
 }

@@ -26,9 +26,8 @@ echo ""
 # 创建测试 PF 规则
 echo "步骤 2: 创建测试 PF 规则..."
 cat > /tmp/pf-test-block.conf << 'EOF'
-# 测试规则: 阻断 cimtest 组的公网连接
-block return out quick proto tcp from any to !127.0.0.0/8 group cimtest
-block return out quick proto udp from any to !127.0.0.0/8 group cimtest
+# 测试规则: 阻断 cimtest 组的全部出站协议
+block return out quick from any to any group cimtest
 EOF
 
 echo "✓ 规则文件已创建"

@@ -1,4 +1,8 @@
-# PF 规则 - 正常态（放行）
+# PF 规则 - 正常态（仅允许通过本地 CIM 代理）
 # /etc/pf.anchors/com.cim.allow
-# 正常运行时不额外阻断
-pass
+# 即使代理健康，实例也不能直接访问公网、局域网或宿主其他服务。
+pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp
+pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp
+pass out quick proto tcp from any to ::1 port 7890 group cimgrp
+pass out quick proto tcp from any to ::1 port 7891 group cimgrp
+block return out quick from any to any group cimgrp
