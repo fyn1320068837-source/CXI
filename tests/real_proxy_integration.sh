@@ -173,7 +173,7 @@ if kind != "code" or os.environ.get("CIM_CODE_REQUIRE_TRAFFIC") == "1":
     assert latest["proxied_count"] > 0, latest
 else:
     assert latest["status"] in ("pass", "unknown"), latest
-    print("code has no observed external traffic; direct=0 remains the safety result")
+    print("code API snapshot had no proxied count; lsof still checked the live process sockets")
 PY
   if [[ "$kind" == "web" ]]; then
     security="$(curl_json "$BASE_URL/api/security/web")"

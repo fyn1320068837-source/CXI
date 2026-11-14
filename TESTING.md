@@ -48,9 +48,9 @@ CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=code,vscode,web \
 `proxied>0`；脚本还会递归检查 PF 隔离 helper 的后代进程，确认实例连接只到本地代理端口；脚本结束时
 会停止本轮启动的实例。
 
-Claude Code 默认启动交互会话，若本轮没有产生外部请求，验证状态会显示
+Claude Code 默认启动交互会话，API 快照可能在子进程建立连接前显示
 `unknown / no_proxy_connection_observed`；此时脚本仍要求 `direct=0`，并以
-`lsof` 检查现有后代连接。需要强制要求 Code 产生代理流量时设置
+`lsof` 检查现有后代连接是否只到本地代理。需要强制要求 Code 产生代理流量时设置
 `CIM_CODE_REQUIRE_TRAFFIC=1`，再配合可触发请求的 Code 会话运行。
 
 ---
