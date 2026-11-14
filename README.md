@@ -137,6 +137,7 @@ WS   /ws                                实时状态推送
 Web 出口泄漏的判定方法、现场命令和证据边界见 [`docs/web-leak-evaluation.md`](docs/web-leak-evaluation.md)。请求 URL 日志只说明访问目标，是否经过代理以 `/api/status` 的进程级 lsof 证据为准。
 
 后续结构整理顺序见 [`docs/next-plan.md`](docs/next-plan.md)，实例隔离分层和 Desktop VM PoC 见 [`docs/instance-isolation-plan.md`](docs/instance-isolation-plan.md)。
+Desktop 的 Tart/Apple VM PoC 操作和阶段验收见 [`docs/desktop-tart-poc.md`](docs/desktop-tart-poc.md)。
 
 `/api/status.proxy.healthy` 表示代理隧道健康；`geo_ready` 和 `geo_status` 表示 Web 启动所需的位置、语言和时区资料是否就绪。GeoIP 未就绪时 Web 会被阻止启动，避免首屏使用主机环境。
 

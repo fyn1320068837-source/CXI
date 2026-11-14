@@ -27,7 +27,11 @@
 
 ## P2：Desktop 强隔离 PoC
 
-优先评估 Tart/Apple VM。先完成 VM 内网络网关、DNS/IPv6、PF fail-closed 和启动恢复的 PoC，再决定是否实现 `DesktopBackend::Vm`。在 PoC 完成前，Desktop 不改变 `UNSUPPORTED` 标记。
+优先评估 Tart/Apple VM。已加入只读检查和显式 `prepare/run/verify/stop` 的 PoC 脚本
+[`tests/desktop_tart_poc.sh`](../tests/desktop_tart_poc.sh)，并记录当前主机具备 Apple
+Virtualization.framework、但尚未安装 Tart 或下载镜像。下一步是在安装 Tart 后完成 VM
+内网络网关、DNS/IPv6、PF fail-closed 和启动恢复的实测，再决定是否实现
+`DesktopBackend::Vm`。在 PoC 完成前，Desktop 不改变 `UNSUPPORTED` 标记。
 
 ## 发布门槛
 

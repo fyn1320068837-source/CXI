@@ -21,7 +21,7 @@
 🟡 M7 交付    [██████  ]  70%  (2天) - P0/P1 已完成，等待 VS Code 环境与 Desktop PoC
 
 总进度: 17/21 天 (81%)
-下一阶段: 先完成无行为变化的结构整理，再做 Desktop VM 隔离 PoC
+下一阶段: 完成 Tart/Apple VM 隔离 PoC，再决定是否实现 Desktop VM backend
 ```
 
 ---
@@ -154,7 +154,7 @@
 [docs/instance-isolation-plan.md](docs/instance-isolation-plan.md)。当前优先级是：
 
 1. 在安装 VS Code 的主机执行 `CIM_REAL_PROXY_INSTANCES=vscode` 真实回归。
-2. Desktop 保持 `UNSUPPORTED`，完成 Tart/Apple VM PoC。
+2. Desktop 保持 `UNSUPPORTED`，运行 `tests/desktop_tart_poc.sh` 完成 Tart/Apple VM PoC。
 3. 继续维护 PF、GeoIP 和实例进程回归证据。
 
 已完成的基础项：
@@ -181,6 +181,12 @@
    - 比较 Tart/Colima VM、独立用户会话和 macOS App 沙盒。
    - 方案确定前，Desktop 继续在控制台标记为“不支持自动覆盖”。
 
+- **Desktop Tart/Apple VM PoC（进行中）**
+   - 本机已确认 Apple Silicon、macOS 26.6.2 和 `Virtualization.framework` 可用。
+   - 已加入只读检查及显式 `prepare/run/verify/stop` 脚本；不会自动安装 Tart、下载镜像或修改宿主网络。
+   - 当前阻塞点是 Tart 和 macOS VM 镜像尚未安装；宿主代理仍只监听 `127.0.0.1`，不能直接作为 VM 网关。
+   - 在健康、代理断开、恢复三阶段证据完成前，Desktop 继续保持 `UNSUPPORTED`。
+
 - **交付**
    - 运行 `cargo check`、`cargo test --all`、真实代理脚本和 `git diff --check`。
    - 更新变更记录后创建最终 Git commit。
@@ -198,13 +204,14 @@
 - ✅ desktop-isolation.md - Desktop 隔离方案评估
 - ✅ next-plan.md - 下一阶段结构整理与验收计划
 - ✅ instance-isolation-plan.md - 实例隔离分层与 VM PoC 计划
+- ✅ desktop-tart-poc.md - Tart/Apple VM PoC 操作和验收流程
 - ✅ M0-FINAL-REPORT.md - M0完成报告
 - ✅ M1-FINAL-REPORT.md - M1完成报告
 - ✅ m0-validation-checklist.md - M0验证清单
 
 ### 待补充文档
 - ⬜ API Reference - API文档
-- ⬜ Desktop VM Setup - VM配置指南（方案确定后补充）
+- 🟡 Desktop VM Setup - 已有 PoC 操作指南，待真实 VM 验收后补充自动化配置
 - ⬜ Troubleshooting - 故障排查
 
 ---
