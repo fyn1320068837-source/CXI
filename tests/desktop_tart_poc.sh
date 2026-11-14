@@ -15,6 +15,7 @@ SOCKS_PORT="${CIM_DESKTOP_SOCKS_PORT:-7891}"
 HTTP_PORT="${CIM_DESKTOP_HTTP_PORT:-7890}"
 PROXY_HOST="${CIM_DESKTOP_PROXY_HOST:-}"
 LOG_DIR="${CIM_DESKTOP_VM_LOG_DIR:-${TMPDIR:-/tmp}/cim-desktop-tart}"
+NO_GRAPHICS="${CIM_DESKTOP_VM_NO_GRAPHICS:-1}"
 
 say() { printf '[desktop-tart] %s\n' "$*"; }
 fail() { say "FAIL: $*" >&2; exit 1; }
@@ -38,7 +39,14 @@ host_checks() {
 }
 
 vm_exists() {
-  "$TART_BIN" list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -Fxq "$VM_NAME"
+  "$TART_BIN" list 2>/dev/null | awk -v name="$VM_NAME" '
+    NR > 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == name) found = 1
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  '
 }
 
 vm_ip() {
@@ -55,9 +63,10 @@ proxy_listener() {
 }
 
 guest_exec() {
-  # Tart's guest agent is preferred because it avoids storing VM credentials.
-  if "$TART_BIN" exec --help 2>&1 | grep -q -- '--'; then
-    "$TART_BIN" exec "$VM_NAME" -- "$@"
+  # Vanilla images do not include the guest agent. Opt into it explicitly for
+  # base images that have the agent installed; otherwise use guest SSH.
+  if [[ "${CIM_DESKTOP_VM_USE_AGENT:-0}" == "1" ]]; then
+    "$TART_BIN" exec "$VM_NAME" "$@"
     return
   fi
 
@@ -126,9 +135,12 @@ run_mode() {
   mkdir -p "$LOG_DIR"
   local log="$LOG_DIR/$VM_NAME.log"
   say "starting $VM_NAME; log: $log"
-  "$TART_BIN" run "$VM_NAME" --no-graphics=false >"$log" 2>&1 &
-  say "tart run pid: $!"
-  say "wait for the guest login/agent, then run: $0 verify healthy"
+  local -a run_args=()
+  if [[ "$NO_GRAPHICS" == "1" ]]; then
+    run_args+=(--no-graphics)
+  fi
+  say "VM stays attached to this terminal; use another terminal for verify"
+  "$TART_BIN" run "${run_args[@]}" "$VM_NAME" >"$log" 2>&1
 }
 
 verify_mode() {
@@ -197,6 +209,8 @@ Environment:
   CIM_DESKTOP_VM_IMAGE      macOS image for prepare
   CIM_DESKTOP_PROXY_HOST    host-reachable address of the CIM HTTP proxy
   CIM_DESKTOP_VM_USER       SSH user if Tart guest agent is unavailable
+  CIM_DESKTOP_VM_NO_GRAPHICS 1=headless (default), 0=show the VM window
+  CIM_DESKTOP_VM_USE_AGENT  1=use Tart guest agent (default: 0 for vanilla)
 USAGE
     exit 64
     ;;

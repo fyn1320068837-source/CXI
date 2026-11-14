@@ -46,6 +46,13 @@ tests/desktop_tart_poc.sh prepare
 tests/desktop_tart_poc.sh run
 ```
 
+`run` 会保持占用当前终端以维持 VM 生命周期；请在另一个终端执行后续 `verify`。
+vanilla 镜像没有预装 Tart guest agent，需在 guest 内启用 Remote Login 后再执行验证；
+只有使用已安装 guest agent 的 base 镜像时才设置 `CIM_DESKTOP_VM_USE_AGENT=1`。
+
+PoC 默认以 headless 模式启动 VM，便于稳定采集网络证据；需要打开 guest 图形窗口时，
+设置 `CIM_DESKTOP_VM_NO_GRAPHICS=0` 后再运行 `tests/desktop_tart_poc.sh run`。
+
 VM 内需要准备 Claude Desktop、Remote Login 或 Tart guest agent，以及一个能够执行
 `sudo` 网络配置的管理员账号。宿主 CIM 的 HTTP/SOCKS 代理必须对 VM 可达；如果代理
 只监听 `127.0.0.1`，VM 无法访问它。应先将网关绑定到 VM 可达地址，再把地址通过环境
