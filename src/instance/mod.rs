@@ -208,10 +208,42 @@ pub fn descendant_pids(root_pid: u32) -> Vec<u32> {
     result
 }
 
+/// Terminate an instance and every descendant process that belongs to its
+/// process tree. Adapters used to signal only the root process, which can
+/// leave browser/extension helpers alive after a failed launch or stop.
+///
+/// The tree is collected again before the force-kill pass because a helper
+/// may be spawned after the initial snapshot. Errors are intentionally
+/// ignored: the caller is already handling a best-effort cleanup path.
+pub async fn terminate_process_tree(root_pid: u32) {
+    let initial_pids = descendant_pids(root_pid);
+    signal_process_tree(&initial_pids, nix::sys::signal::Signal::SIGTERM);
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+    let mut remaining_pids = initial_pids;
+    for pid in descendant_pids(root_pid) {
+        if !remaining_pids.contains(&pid) {
+            remaining_pids.push(pid);
+        }
+    }
+    signal_process_tree(&remaining_pids, nix::sys::signal::Signal::SIGKILL);
+}
+
+fn signal_process_tree(pids: &[u32], signal: nix::sys::signal::Signal) {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    // Signal children before their root so process-group helpers have a
+    // chance to flush and exit without leaving grandchildren behind.
+    for pid in pids.iter().rev() {
+        let _ = kill(Pid::from_raw(*pid as i32), signal);
+    }
+}
+
 // Concrete adapters
 mod code;
 mod desktop;
 mod manager;
+mod runtime;
 mod vscode;
 mod web;
 
@@ -223,7 +255,8 @@ pub use web::WebAdapter;
 
 #[cfg(test)]
 mod tests {
-    use super::InstanceKind;
+    use super::{descendant_pids, terminate_process_tree, InstanceKind};
+    use std::process::{Command, Stdio};
 
     #[test]
     fn instance_kind_round_trips_api_names() {
@@ -231,5 +264,35 @@ mod tests {
             assert_eq!(InstanceKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(InstanceKind::parse("unknown"), None);
+    }
+
+    #[tokio::test]
+    async fn terminate_process_tree_cleans_root_and_helpers() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .spawn()
+            .expect("shell is required for the process-tree cleanup test");
+        let root_pid = child.id();
+
+        // Let the shell create its helper before taking the snapshot. The
+        // cleanup path must cover both the adapter root and its descendants.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let pids = descendant_pids(root_pid);
+        assert!(pids.contains(&root_pid));
+        // Some sandboxed macOS runners hide child PIDs from `pgrep -P`; the
+        // root assertion still exercises the mandatory cleanup path there.
+
+        terminate_process_tree(root_pid).await;
+
+        let _ = child.try_wait();
+        for pid in pids {
+            let alive = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            assert!(!alive, "process {pid} survived tree cleanup");
+        }
     }
 }

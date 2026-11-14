@@ -1,7 +1,7 @@
 // Claude Code CLI adapter (Instance A)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, CapabilityReport, InstanceAdapter,
-    ProcessHandle,
+    apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
+    InstanceAdapter, ProcessHandle,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::Result;
@@ -83,17 +83,7 @@ impl InstanceAdapter for CodeAdapter {
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
-        // Send SIGTERM, wait 5s, then SIGKILL
-        use nix::sys::signal::{kill, Signal};
-        use nix::unistd::Pid;
-
-        let pid = Pid::from_raw(handle.root_pid as i32);
-        let _ = kill(pid, Signal::SIGTERM);
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-        // Force kill
-        let _ = kill(pid, Signal::SIGKILL);
+        terminate_process_tree(handle.root_pid).await;
         Ok(())
     }
 

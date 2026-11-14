@@ -5,13 +5,14 @@
 - Code、VS Code、Web 使用 root-owned `cim-instance-launch`、`cimgrp` 和 PF fail-closed。
 - Web 已完成 GeoIP 首屏覆盖、代理连接验证、WebRTC/IPv6/DNS 复测；Web 专属 DNS 包级验证通过。
 - Desktop 仍是宿主机 `open -a Claude`，状态固定为 `UNSUPPORTED`。
-- 本轮先完成了低风险整理：`InstanceKind` 统一字符串解析和枚举列表，`InstanceManager` 统一 adapter 选择，API 去掉重复 kind 映射。
+- 已完成低风险结构整理：`InstanceKind` 统一字符串解析和枚举列表，`InstanceManager` 统一 adapter 选择，API 去掉重复 kind 映射；API、Web、Proxy 已按职责拆分。
+- 本轮完成 `InstanceRuntime`：启动预留防重复启动，启动事务在存储失败时回滚进程，停止时保留失败句柄，统一清理进程树；Web 启动失败会删除本次 session 目录。
 
 ## P0：无行为变化的结构整理
 
-1. 抽出 `InstanceRuntime`，集中处理独立目录、代理端点、TZ/LANG/locale、root helper 和清理。
-2. 将 `api/mod.rs` 拆为状态、实例、代理、日志、安全结论和 WebSocket handler；只移动代码，不改变 API。
-3. 将 `web.rs` 拆为 Chrome 启动、CDP profile、目标监控、请求日志四个模块。
+1. ✅ 抽出 `InstanceRuntime`，集中处理启动预留、句柄发布、停止和失败回滚。
+2. ✅ 将 `api/mod.rs` 拆为状态、实例、代理、日志、安全结论和 WebSocket handler；只移动代码，不改变 API。
+3. ✅ 将 `web.rs` 拆为生命周期和 CDP/请求监控模块。
 4. 把同步 SQLite 操作统一放入 `spawn_blocking`，避免阻塞 Axum/Tokio worker。
 5. 补齐 `cim status` 和 `cim stop-all`，作为 daemon 重启后的 smoke test。
 
@@ -19,8 +20,8 @@
 
 ## P1：实例运行时一致性
 
-1. 统一启动失败回滚：终止已启动进程、删除本次 session 目录、恢复 manager 状态。
-2. 停止流程使用两阶段 SIGTERM/SIGKILL，并按唯一 session marker 清理脱离父进程的 Chrome/VS Code helper。
+1. ✅ 统一启动失败回滚：终止已启动进程、删除本次 Web session 目录、恢复 runtime 状态；回滚不修改代理健康状态。
+2. ✅ 停止流程使用两阶段 SIGTERM/SIGKILL，并清理实例进程树；按唯一 session marker 清理脱离父进程的 Chrome helper 仍需真实环境回归。
 3. 统一验证结论：`direct=0`、`proxied>0`、PF 状态、检查时间和失败原因由同一个 verifier 输出。
 4. 为 Code、VS Code、Web 增加独立 HOME/data/extensions/session 的回归测试。
 

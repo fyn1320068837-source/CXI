@@ -102,10 +102,7 @@ impl InstanceAdapter for WebAdapter {
                             chain = %format!("{:#}", error),
                             "Failed to apply browser locale/timezone profile"
                         );
-                        let _ = nix::sys::signal::kill(
-                            nix::unistd::Pid::from_raw(root_pid as i32),
-                            nix::sys::signal::Signal::SIGTERM,
-                        );
+                        terminate_process_tree(root_pid).await;
                         let _ = std::fs::remove_dir_all(&session_dir);
                         return Err(
                             error.context("Failed to apply browser locale/timezone profile")
@@ -146,15 +143,7 @@ impl InstanceAdapter for WebAdapter {
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
-        use nix::sys::signal::{kill, Signal};
-        use nix::unistd::Pid;
-
-        let pid = Pid::from_raw(handle.root_pid as i32);
-        let _ = kill(pid, Signal::SIGTERM);
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-        let _ = kill(pid, Signal::SIGKILL);
+        terminate_process_tree(handle.root_pid).await;
         if let Some(session_dir) = self.sessions.lock().unwrap().remove(&handle.root_pid) {
             let _ = std::fs::remove_dir_all(session_dir);
         }

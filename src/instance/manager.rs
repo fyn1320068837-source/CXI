@@ -1,7 +1,8 @@
 // Instance Manager - manages lifecycle of all instances
+use super::runtime::{InstanceRuntime, LaunchTransaction};
 use super::{
-    CodeAdapter, DesktopAdapter, InstanceAdapter, InstanceKind, ProcessHandle, RequestLogSender,
-    ValidationStatus, VsCodeAdapter, WebAdapter,
+    CodeAdapter, DesktopAdapter, InstanceAdapter, InstanceKind, RequestLogSender, ValidationStatus,
+    VsCodeAdapter, WebAdapter,
 };
 use crate::geoip::{GeoProfile, SharedGeoProfile};
 use crate::storage::Storage;
@@ -9,10 +10,9 @@ use crate::verifier::{NetworkVerifier, VerificationStatus};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 pub struct InstanceManager {
-    instances: Arc<RwLock<HashMap<InstanceKind, Option<ProcessHandle>>>>,
+    runtime: InstanceRuntime,
     code: Arc<CodeAdapter>,
     desktop: Arc<DesktopAdapter>,
     vscode: Arc<VsCodeAdapter>,
@@ -25,7 +25,7 @@ pub struct InstanceManager {
 impl InstanceManager {
     pub fn with_geo_profile(geo_profile: SharedGeoProfile) -> Self {
         Self {
-            instances: Arc::new(RwLock::new(HashMap::new())),
+            runtime: InstanceRuntime::new(),
             code: Arc::new(CodeAdapter::new_with_geo_profile(
                 format!("{}/.cim/instances/code", std::env::var("HOME").unwrap()),
                 geo_profile.clone(),
@@ -82,6 +82,7 @@ impl InstanceManager {
 
     pub async fn launch(&self, kind: InstanceKind) -> Result<()> {
         let adapter = self.adapter_for(kind);
+        let reservation = self.runtime.reserve(kind).await?;
 
         let capability = adapter.detect().await;
         tracing::debug!(
@@ -92,6 +93,7 @@ impl InstanceManager {
             "instance capability detected"
         );
         if !capability.installed {
+            reservation.abort().await;
             anyhow::bail!("{} is not installed", kind.as_str());
         }
 
@@ -103,6 +105,8 @@ impl InstanceManager {
         if kind == InstanceKind::Web {
             let profile = self.geo_profile.read().await;
             if !web_profile_ready(&profile) {
+                drop(profile);
+                reservation.abort().await;
                 anyhow::bail!(
                     "GeoIP profile is not ready; Web launch is blocked until the exit location is resolved"
                 );
@@ -110,57 +114,75 @@ impl InstanceManager {
         }
 
         // Prepare
-        adapter.prepare().await?;
+        if let Err(error) = adapter.prepare().await {
+            reservation.abort().await;
+            return Err(error.context(format!("failed to prepare {} instance", kind.as_str())));
+        }
 
         // Launch
-        let handle = adapter.launch().await?;
+        let handle = match adapter.launch().await {
+            Ok(handle) => handle,
+            Err(error) => {
+                reservation.abort().await;
+                return Err(error.context(format!("failed to launch {} instance", kind.as_str())));
+            }
+        };
+        let mut transaction = LaunchTransaction::new(adapter.clone(), handle);
+        let root_pid = transaction
+            .handle()
+            .expect("launch transaction must own a process")
+            .root_pid;
 
         // Save to storage
         if let Some(ref storage) = self.storage {
             let kind_str = kind.as_str();
-            match storage.save_instance_state(kind_str, "running", Some(handle.root_pid)) {
+            match storage.save_instance_state(kind_str, "running", Some(root_pid)) {
                 Ok(id) => tracing::info!("Saved instance state to storage: id={}", id),
-                Err(e) => tracing::error!("Failed to save instance state: {}", e),
+                Err(error) => {
+                    let rollback = transaction.rollback().await;
+                    reservation.abort().await;
+                    tracing::warn!(
+                        instance = %kind.as_str(),
+                        "Instance launch rolled back; proxy health state was left unchanged"
+                    );
+                    if let Err(cleanup_error) = rollback {
+                        return Err(error.context(format!(
+                            "failed to save instance state; launch rollback also failed: {}",
+                            cleanup_error
+                        )));
+                    }
+                    return Err(error.context("failed to save instance state; launch rolled back"));
+                }
             }
         } else {
             tracing::warn!("No storage configured for InstanceManager");
         }
 
-        // Store handle
-        let mut instances = self.instances.write().await;
-        instances.insert(kind, Some(handle));
+        // Publish the handle only after every fallible launch step succeeded.
+        let handle = transaction.commit();
+        self.runtime.commit(reservation, handle).await;
 
         Ok(())
     }
 
     pub async fn stop(&self, kind: InstanceKind) -> Result<()> {
-        let mut instances = self.instances.write().await;
-
-        if let Some(Some(handle)) = instances.get(&kind) {
-            let adapter = self.adapter_for(kind);
-
-            adapter.stop(handle).await?;
-
-            // Save to storage
+        let adapter = self.adapter_for(kind);
+        if self.runtime.stop(kind, &adapter).await? {
             if let Some(ref storage) = self.storage {
-                let kind_str = kind.as_str();
-                match storage.save_instance_state(kind_str, "stopped", None) {
+                match storage.save_instance_state(kind.as_str(), "stopped", None) {
                     Ok(id) => tracing::info!("Saved stopped state to storage: id={}", id),
-                    Err(e) => tracing::error!("Failed to save stopped state: {}", e),
+                    Err(error) => tracing::error!("Failed to save stopped state: {}", error),
                 }
             } else {
                 tracing::warn!("No storage configured for stop");
             }
-
-            instances.insert(kind, None);
         }
 
         Ok(())
     }
 
     pub async fn is_running(&self, kind: InstanceKind) -> bool {
-        let instances = self.instances.read().await;
-        instances.get(&kind).and_then(|h| h.as_ref()).is_some()
+        self.runtime.is_running(kind).await
     }
 
     pub async fn status_all(&self) -> HashMap<InstanceKind, bool> {
@@ -172,15 +194,11 @@ impl InstanceManager {
     }
 
     pub async fn pid_all(&self) -> HashMap<InstanceKind, Option<u32>> {
-        let instances = self.instances.read().await;
-        instances
-            .iter()
-            .map(|(kind, handle)| (*kind, handle.as_ref().map(|value| value.root_pid)))
-            .collect()
+        self.runtime.pid_all().await
     }
 
     pub async fn validation_all(&self) -> HashMap<InstanceKind, InstanceValidation> {
-        let handles = self.instances.read().await.clone();
+        let handles = self.runtime.handles().await;
         let mut result = HashMap::new();
 
         for kind in InstanceKind::ALL {
@@ -196,7 +214,7 @@ impl InstanceManager {
                 continue;
             }
 
-            let Some(Some(handle)) = handles.get(&kind) else {
+            let Some(handle) = handles.get(&kind) else {
                 result.insert(kind, InstanceValidation::unknown("instance stopped"));
                 continue;
             };

@@ -88,10 +88,16 @@ impl InstanceAdapter for DesktopAdapter {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // Get actual Claude process PID
-        let pid = self
-            .get_claude_pid()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Failed to find Claude Desktop process"))?;
+        let Some(pid) = self.get_claude_pid().await else {
+            // `open` can succeed while the app process is still unavailable.
+            // Do not leave a newly started Desktop instance behind when the
+            // adapter cannot return a handle to the manager.
+            let _ = Command::new("osascript")
+                .arg("-e")
+                .arg("quit app \"Claude\"")
+                .status();
+            anyhow::bail!("Failed to find Claude Desktop process; launch rolled back");
+        };
 
         Ok(ProcessHandle { root_pid: pid })
     }

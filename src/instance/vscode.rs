@@ -1,7 +1,7 @@
 // VS Code Claude extension adapter (Instance C)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, CapabilityReport, InstanceAdapter,
-    ProcessHandle,
+    apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
+    InstanceAdapter, ProcessHandle,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::Result;
@@ -102,15 +102,7 @@ impl InstanceAdapter for VsCodeAdapter {
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
-        use nix::sys::signal::{kill, Signal};
-        use nix::unistd::Pid;
-
-        let pid = Pid::from_raw(handle.root_pid as i32);
-        let _ = kill(pid, Signal::SIGTERM);
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-        let _ = kill(pid, Signal::SIGKILL);
+        terminate_process_tree(handle.root_pid).await;
         Ok(())
     }
 
