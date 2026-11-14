@@ -22,8 +22,8 @@
 
 1. ✅ 统一启动失败回滚：终止已启动进程、删除本次 Web session 目录、恢复 runtime 状态；回滚不修改代理健康状态。
 2. ✅ 停止流程使用两阶段 SIGTERM/SIGKILL，并清理实例进程树；按唯一 session marker 清理脱离父进程的 Chrome helper 仍需真实环境回归。
-3. 统一验证结论：`direct=0`、`proxied>0`、PF 状态、检查时间和失败原因由同一个 verifier 输出。
-4. 为 Code、VS Code、Web 增加独立 HOME/data/extensions/session 的回归测试。
+3. ✅ 统一验证结论：verifier 输出 `direct=0`、`proxied`、直接端点、检查时间和失败原因；PF 状态继续由全局 firewall 结论提供。
+4. ✅ 为 Code、VS Code、Web 增加独立 HOME/data/extensions/session、代理参数和 Web 网络保护参数的无 GUI 回归测试；真实 Web lsof/DNS 回归已通过。
 
 ## P2：Desktop 强隔离 PoC
 

@@ -62,6 +62,10 @@ pub struct RequestLogEntry {
 
 pub type RequestLogSender = mpsc::Sender<RequestLogEntry>;
 
+pub(crate) const HTTP_PROXY_ENDPOINT: &str = "http://127.0.0.1:7890";
+pub(crate) const SOCKS_PROXY_ENDPOINT: &str = "socks5://127.0.0.1:7891";
+pub(crate) const LOOPBACK_NO_PROXY: &str = "localhost,127.0.0.1";
+
 #[derive(Debug)]
 pub struct CapabilityReport {
     pub installed: bool,

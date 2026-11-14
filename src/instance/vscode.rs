@@ -1,7 +1,7 @@
 // VS Code Claude extension adapter (Instance C)
 use super::{
     apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
-    InstanceAdapter, ProcessHandle,
+    InstanceAdapter, ProcessHandle, HTTP_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::Result;
@@ -26,6 +26,27 @@ impl VsCodeAdapter {
             geo_profile,
         }
     }
+}
+
+fn configure_vscode_command(
+    command: &mut Command,
+    user_data_dir: &str,
+    extensions_dir: &str,
+    profile: &crate::geoip::GeoProfile,
+) {
+    let proxy_arg = format!("--proxy-server={HTTP_PROXY_ENDPOINT}");
+    command.args([
+        "--user-data-dir",
+        user_data_dir,
+        "--extensions-dir",
+        extensions_dir,
+        &proxy_arg,
+        "--new-window",
+    ]);
+    if let Some(language) = profile.language.as_deref() {
+        command.arg("--locale").arg(language);
+    }
+    apply_locale_env(command, profile);
 }
 
 #[async_trait]
@@ -82,18 +103,12 @@ impl InstanceAdapter for VsCodeAdapter {
             .path
             .ok_or_else(|| anyhow::anyhow!("code is not installed"))?;
         let mut command = isolated_command(executable);
-        command.args([
-            "--user-data-dir",
+        configure_vscode_command(
+            &mut command,
             &self.user_data_dir,
-            "--extensions-dir",
             &self.extensions_dir,
-            "--proxy-server=http://127.0.0.1:7890",
-            "--new-window",
-        ]);
-        if let Some(language) = profile.language.as_deref() {
-            command.arg("--locale").arg(language);
-        }
-        apply_locale_env(&mut command, &profile);
+            &profile,
+        );
         let child = command.spawn()?;
 
         Ok(ProcessHandle {
@@ -108,5 +123,55 @@ impl InstanceAdapter for VsCodeAdapter {
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
         descendant_pids(handle.root_pid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::configure_vscode_command;
+    use crate::geoip::GeoProfile;
+    use std::process::Command;
+
+    fn env_value(command: &Command, key: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(name, _)| name.to_string_lossy() == key)
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn vscode_command_keeps_data_dirs_and_proxy_separate() {
+        let profile = GeoProfile {
+            language: Some("zh-CN".to_string()),
+            timezone: Some("Asia/Shanghai".to_string()),
+            locale: Some("zh_CN.UTF-8".to_string()),
+            ..GeoProfile::default()
+        };
+        let mut command = Command::new("code");
+        configure_vscode_command(
+            &mut command,
+            "/tmp/cim-vscode-data",
+            "/tmp/cim-vscode-extensions",
+            &profile,
+        );
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--user-data-dir", "/tmp/cim-vscode-data"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--extensions-dir", "/tmp/cim-vscode-extensions"]));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--proxy-server=http://127.0.0.1:7890"));
+        assert!(args.windows(2).any(|pair| pair == ["--locale", "zh-CN"]));
+        assert_eq!(env_value(&command, "TZ").as_deref(), Some("Asia/Shanghai"));
+        assert_eq!(
+            env_value(&command, "LC_ALL").as_deref(),
+            Some("zh_CN.UTF-8")
+        );
     }
 }

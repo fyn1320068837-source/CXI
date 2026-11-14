@@ -41,9 +41,12 @@ impl NetworkVerifier {
     }
 
     async fn get_tcp_connections(&self, pid: u32) -> Result<Vec<Connection>> {
-        let output = Command::new("lsof")
-            .args(["-a", "-i", "-p", &pid.to_string(), "-n", "-P"])
-            .output()?;
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new("lsof")
+                .args(["-a", "-i", "-p", &pid.to_string(), "-n", "-P"])
+                .output()
+        })
+        .await??;
 
         // lsof returns 1 when a process has no matching sockets. That is a
         // valid empty result; permission errors, missing binaries, and other
@@ -154,6 +157,33 @@ impl VerificationResult {
         }
     }
 
+    /// Produce the single process-level validation snapshot consumed by the
+    /// manager, storage and API. The snapshot keeps the counters, timestamp,
+    /// status and direct-connection reason together so callers do not rebuild
+    /// a conclusion from partially duplicated fields.
+    pub fn snapshot(&self) -> VerificationSnapshot {
+        let status = self.status();
+        VerificationSnapshot {
+            status,
+            checked_at: chrono::Utc::now().to_rfc3339(),
+            checked_pids: self.checked_pids.len(),
+            proxied: self.proxied_connections,
+            local: self.local_connections,
+            direct: self.direct_connections.len(),
+            direct_endpoints: self
+                .direct_connections
+                .iter()
+                .map(|conn| format!("{}:{} ({})", conn.pid, conn.remote_addr, conn.state))
+                .collect(),
+            details: self.details(),
+            reason: match status {
+                VerificationStatus::Pass => None,
+                VerificationStatus::Fail => Some("direct_connection_detected".to_string()),
+                VerificationStatus::Unknown => Some("no_proxy_connection_observed".to_string()),
+            },
+        }
+    }
+
     pub fn details(&self) -> String {
         let direct = self
             .direct_connections
@@ -185,6 +215,29 @@ pub enum VerificationStatus {
     Pass,
     Fail,
     Unknown,
+}
+
+impl VerificationStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VerificationSnapshot {
+    pub status: VerificationStatus,
+    pub checked_at: String,
+    pub checked_pids: usize,
+    pub proxied: usize,
+    pub local: usize,
+    pub direct: usize,
+    pub direct_endpoints: Vec<String>,
+    pub details: String,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -283,6 +336,45 @@ mod tests {
             }),
             ConnectionType::Local
         ));
+    }
+
+    #[test]
+    fn snapshot_unifies_counts_status_and_reason() {
+        let result = VerificationResult {
+            checked_pids: vec![41, 42],
+            proxied_connections: 2,
+            local_connections: 1,
+            ..VerificationResult::default()
+        };
+        let snapshot = result.snapshot();
+        assert_eq!(snapshot.status, VerificationStatus::Pass);
+        assert_eq!(snapshot.checked_pids, 2);
+        assert_eq!(snapshot.proxied, 2);
+        assert_eq!(snapshot.local, 1);
+        assert_eq!(snapshot.direct, 0);
+        assert!(snapshot.reason.is_none());
+        assert!(snapshot.checked_at.contains('T'));
+
+        let direct = VerificationResult {
+            checked_pids: vec![41],
+            direct_connections: vec![Connection {
+                pid: 41,
+                remote_addr: "8.8.8.8:443".to_string(),
+                state: "ESTABLISHED".to_string(),
+            }],
+            ..VerificationResult::default()
+        };
+        let snapshot = direct.snapshot();
+        assert_eq!(snapshot.status, VerificationStatus::Fail);
+        assert_eq!(snapshot.direct, 1);
+        assert_eq!(
+            snapshot.direct_endpoints,
+            vec!["41:8.8.8.8:443 (ESTABLISHED)"]
+        );
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some("direct_connection_detected")
+        );
     }
 
     #[test]

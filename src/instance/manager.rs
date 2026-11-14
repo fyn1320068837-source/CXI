@@ -215,6 +215,8 @@ impl InstanceManager {
                         status: ValidationStatus::Unsupported,
                         details: "Desktop 自动覆盖未支持，当前为软隔离模式".to_string(),
                         checked_at: None,
+                        reason: Some("unsupported_backend".to_string()),
+                        direct_endpoints: Vec::new(),
                     },
                 );
                 continue;
@@ -229,38 +231,35 @@ impl InstanceManager {
             let pids = adapter.process_tree(handle).await;
             match self.verifier.verify_process(&pids).await {
                 Ok(check) => {
-                    let validation_status = check.status();
+                    let snapshot = check.snapshot();
+                    let validation_status = snapshot.status;
                     let status = match validation_status {
                         VerificationStatus::Pass => ValidationStatus::Pass,
                         VerificationStatus::Fail => ValidationStatus::Fail,
                         VerificationStatus::Unknown => ValidationStatus::Unknown,
                     };
-                    let details = check.details();
-                    let checked_at = chrono::Utc::now().to_rfc3339();
+                    let details = snapshot.details.clone();
+                    let checked_at = snapshot.checked_at.clone();
                     let kind_str = kind.as_str();
-                    let status_str = match validation_status {
-                        VerificationStatus::Pass => "pass",
-                        VerificationStatus::Fail => "fail",
-                        VerificationStatus::Unknown => "unknown",
-                    };
-                    if check.direct_connections.is_empty() {
+                    let status_str = validation_status.as_str();
+                    if snapshot.direct == 0 {
                         tracing::info!(
                             instance = %kind_str,
                             status = status_str,
-                            checked_pids = check.checked_pids.len(),
-                            proxied = check.proxied_connections,
-                            local = check.local_connections,
-                            direct = 0,
+                            checked_pids = snapshot.checked_pids,
+                            proxied = snapshot.proxied,
+                            local = snapshot.local,
+                            direct = snapshot.direct,
                             "Network validation snapshot"
                         );
                     } else {
                         tracing::warn!(
                             instance = %kind_str,
                             status = status_str,
-                            checked_pids = check.checked_pids.len(),
-                            proxied = check.proxied_connections,
-                            local = check.local_connections,
-                            direct = check.direct_connections.len(),
+                            checked_pids = snapshot.checked_pids,
+                            proxied = snapshot.proxied,
+                            local = snapshot.local,
+                            direct = snapshot.direct,
                             details = %details,
                             "Network validation detected direct connection"
                         );
@@ -270,9 +269,9 @@ impl InstanceManager {
                             .save_validation_evidence_async(
                                 kind_str,
                                 status_str,
-                                check.proxied_connections,
-                                check.local_connections,
-                                check.direct_connections.len(),
+                                snapshot.proxied,
+                                snapshot.local,
+                                snapshot.direct,
                                 &details,
                             )
                             .await
@@ -290,6 +289,8 @@ impl InstanceManager {
                             status,
                             details,
                             checked_at: Some(checked_at),
+                            reason: snapshot.reason,
+                            direct_endpoints: snapshot.direct_endpoints,
                         },
                     );
                 }
@@ -314,6 +315,8 @@ impl InstanceManager {
                             status: ValidationStatus::Fail,
                             details,
                             checked_at: Some(chrono::Utc::now().to_rfc3339()),
+                            reason: Some("verifier_error".to_string()),
+                            direct_endpoints: Vec::new(),
                         },
                     );
                 }
@@ -331,6 +334,8 @@ pub struct InstanceValidation {
     pub status: ValidationStatus,
     pub details: String,
     pub checked_at: Option<String>,
+    pub reason: Option<String>,
+    pub direct_endpoints: Vec<String>,
 }
 
 impl InstanceValidation {
@@ -339,6 +344,8 @@ impl InstanceValidation {
             status: ValidationStatus::Unknown,
             details: details.to_string(),
             checked_at: None,
+            reason: Some("instance_stopped".to_string()),
+            direct_endpoints: Vec::new(),
         }
     }
 }

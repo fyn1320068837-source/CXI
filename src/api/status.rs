@@ -58,6 +58,8 @@ struct InstanceStatus {
     pid: Option<u32>,
     validation: String,
     validation_details: String,
+    validation_reason: Option<String>,
+    validation_direct_endpoints: Vec<String>,
     validation_checked_at: Option<String>,
 }
 
@@ -110,6 +112,8 @@ async fn get_status(
                 (
                     validation_name(&value.status).to_string(),
                     value.details.clone(),
+                    value.reason.clone(),
+                    value.direct_endpoints.clone(),
                     value.checked_at.clone(),
                 )
             })
@@ -117,18 +121,40 @@ async fn get_status(
                 (
                     "unknown".to_string(),
                     "validation unavailable".to_string(),
+                    Some("validation_unavailable".to_string()),
+                    Vec::new(),
                     None,
                 )
             })
     };
-    let (code_validation, code_validation_details, code_checked_at) =
-        validation_for(InstanceKind::Code);
-    let (desktop_validation, desktop_validation_details, desktop_checked_at) =
-        validation_for(InstanceKind::Desktop);
-    let (vscode_validation, vscode_validation_details, vscode_checked_at) =
-        validation_for(InstanceKind::VsCode);
-    let (web_validation, web_validation_details, web_checked_at) =
-        validation_for(InstanceKind::Web);
+    let (
+        code_validation,
+        code_validation_details,
+        code_validation_reason,
+        code_direct_endpoints,
+        code_checked_at,
+    ) = validation_for(InstanceKind::Code);
+    let (
+        desktop_validation,
+        desktop_validation_details,
+        desktop_validation_reason,
+        desktop_direct_endpoints,
+        desktop_checked_at,
+    ) = validation_for(InstanceKind::Desktop);
+    let (
+        vscode_validation,
+        vscode_validation_details,
+        vscode_validation_reason,
+        vscode_direct_endpoints,
+        vscode_checked_at,
+    ) = validation_for(InstanceKind::VsCode);
+    let (
+        web_validation,
+        web_validation_details,
+        web_validation_reason,
+        web_direct_endpoints,
+        web_checked_at,
+    ) = validation_for(InstanceKind::Web);
 
     let instances = vec![
         InstanceStatus {
@@ -145,6 +171,8 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::Code).copied().flatten(),
             validation: code_validation,
             validation_details: code_validation_details,
+            validation_reason: code_validation_reason,
+            validation_direct_endpoints: code_direct_endpoints,
             validation_checked_at: code_checked_at,
         },
         InstanceStatus {
@@ -161,6 +189,8 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::Desktop).copied().flatten(),
             validation: desktop_validation,
             validation_details: desktop_validation_details,
+            validation_reason: desktop_validation_reason,
+            validation_direct_endpoints: desktop_direct_endpoints,
             validation_checked_at: desktop_checked_at,
         },
         InstanceStatus {
@@ -177,6 +207,8 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::VsCode).copied().flatten(),
             validation: vscode_validation,
             validation_details: vscode_validation_details,
+            validation_reason: vscode_validation_reason,
+            validation_direct_endpoints: vscode_direct_endpoints,
             validation_checked_at: vscode_checked_at,
         },
         InstanceStatus {
@@ -189,6 +221,8 @@ async fn get_status(
             pid: pid_map.get(&InstanceKind::Web).copied().flatten(),
             validation: web_validation,
             validation_details: web_validation_details,
+            validation_reason: web_validation_reason,
+            validation_direct_endpoints: web_direct_endpoints,
             validation_checked_at: web_checked_at,
         },
     ];

@@ -3,7 +3,36 @@ use super::cdp::{
     monitor_browser_targets, processes_using_session_dir,
 };
 use super::*;
+use crate::instance::SOCKS_PROXY_ENDPOINT;
 use async_trait::async_trait;
+
+fn browser_launch_args(session_dir: &str, debug_port: u16, profile: &GeoProfile) -> Vec<String> {
+    let mut args = vec![
+        format!("--user-data-dir={session_dir}"),
+        format!("--proxy-server={SOCKS_PROXY_ENDPOINT}"),
+        "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1".to_string(),
+        // Do not allow WebRTC or HTTP/3 to create UDP paths outside the
+        // SOCKS5 tunnel. The process-level verifier still checks the
+        // resulting sockets, but these flags remove the browser's direct
+        // UDP fallback paths up front.
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
+        "--disable-quic".to_string(),
+        "--disable-background-networking".to_string(),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        format!("--remote-debugging-port={debug_port}"),
+        "--remote-allow-origins=*".to_string(),
+    ];
+    if let Some(language) = profile.language.as_deref() {
+        args.push(format!("--lang={language}"));
+    }
+    // Do not navigate before DevTools has installed the locale, timezone,
+    // geolocation and Accept-Language overrides. Otherwise the first
+    // document is fetched with the host locale and only a later refresh
+    // reflects the proxy's GeoIP profile.
+    args.push("about:blank".to_string());
+    args
+}
 
 #[async_trait]
 impl InstanceAdapter for WebAdapter {
@@ -53,30 +82,7 @@ impl InstanceAdapter for WebAdapter {
             );
         }
 
-        let mut args = vec![
-            format!("--user-data-dir={}", session_dir),
-            "--proxy-server=socks5://127.0.0.1:7891".to_string(),
-            "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1".to_string(),
-            // Do not allow WebRTC or HTTP/3 to create UDP paths outside the
-            // SOCKS5 tunnel. The process-level verifier still checks the
-            // resulting sockets, but these flags remove the browser's direct
-            // UDP fallback paths up front.
-            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
-            "--disable-quic".to_string(),
-            "--disable-background-networking".to_string(),
-            "--no-first-run".to_string(),
-            "--no-default-browser-check".to_string(),
-            format!("--remote-debugging-port={}", debug_port),
-            "--remote-allow-origins=*".to_string(),
-        ];
-        if let Some(language) = profile.language.as_deref() {
-            args.push(format!("--lang={}", language));
-        }
-        // Do not navigate before DevTools has installed the locale, timezone,
-        // geolocation and Accept-Language overrides. Otherwise the first
-        // document is fetched with the host locale and only a later refresh
-        // reflects the proxy's GeoIP profile.
-        args.push("about:blank".to_string());
+        let args = browser_launch_args(&session_dir, debug_port, &profile);
 
         let mut command = isolated_command(&browser_path);
         command.args(&args);
@@ -158,5 +164,36 @@ impl InstanceAdapter for WebAdapter {
         pids.sort_unstable();
         pids.dedup();
         pids
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::browser_launch_args;
+    use crate::geoip::GeoProfile;
+
+    #[test]
+    fn web_command_uses_unique_session_proxy_and_network_guards() {
+        let profile = GeoProfile {
+            language: Some("en-US".to_string()),
+            ..GeoProfile::default()
+        };
+        let args = browser_launch_args("/tmp/cim-web/sessions/test-session", 4567, &profile);
+
+        assert!(args
+            .iter()
+            .any(|arg| { arg == "--user-data-dir=/tmp/cim-web/sessions/test-session" }));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--proxy-server=socks5://127.0.0.1:7891"));
+        assert!(args
+            .iter()
+            .any(|arg| { arg == "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" }));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+        assert!(args.iter().any(|arg| arg == "--disable-quic"));
+        assert!(args.iter().any(|arg| arg == "--lang=en-US"));
+        assert_eq!(args.last().map(String::as_str), Some("about:blank"));
     }
 }

@@ -1,7 +1,7 @@
 // Claude Code CLI adapter (Instance A)
 use super::{
     apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
-    InstanceAdapter, ProcessHandle,
+    InstanceAdapter, ProcessHandle, HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::Result;
@@ -20,6 +20,20 @@ impl CodeAdapter {
             geo_profile,
         }
     }
+}
+
+fn configure_code_command(
+    command: &mut Command,
+    profile_dir: &str,
+    profile: &crate::geoip::GeoProfile,
+) {
+    command
+        .env("HOME", profile_dir)
+        .env("HTTPS_PROXY", HTTP_PROXY_ENDPOINT)
+        .env("HTTP_PROXY", HTTP_PROXY_ENDPOINT)
+        .env("ALL_PROXY", SOCKS_PROXY_ENDPOINT)
+        .env("NO_PROXY", LOOPBACK_NO_PROXY);
+    apply_locale_env(command, profile);
 }
 
 #[async_trait]
@@ -68,13 +82,7 @@ impl InstanceAdapter for CodeAdapter {
             .path
             .ok_or_else(|| anyhow::anyhow!("claude is not installed"))?;
         let mut command = isolated_command(executable);
-        command
-            .env("HOME", &self.profile_dir)
-            .env("HTTPS_PROXY", "http://127.0.0.1:7890")
-            .env("HTTP_PROXY", "http://127.0.0.1:7890")
-            .env("ALL_PROXY", "socks5://127.0.0.1:7891")
-            .env("NO_PROXY", "localhost,127.0.0.1");
-        apply_locale_env(&mut command, &profile);
+        configure_code_command(&mut command, &self.profile_dir, &profile);
         let child = command.spawn()?;
 
         Ok(ProcessHandle {
@@ -89,5 +97,54 @@ impl InstanceAdapter for CodeAdapter {
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
         descendant_pids(handle.root_pid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::configure_code_command;
+    use crate::geoip::GeoProfile;
+    use std::process::Command;
+
+    fn env_value(command: &Command, key: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(name, _)| name.to_string_lossy() == key)
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn code_command_uses_isolated_home_and_local_proxy() {
+        let profile = GeoProfile {
+            timezone: Some("America/New_York".to_string()),
+            locale: Some("en_US.UTF-8".to_string()),
+            ..GeoProfile::default()
+        };
+        let mut command = Command::new("claude");
+        configure_code_command(&mut command, "/tmp/cim-code-home", &profile);
+        assert_eq!(
+            env_value(&command, "HOME").as_deref(),
+            Some("/tmp/cim-code-home")
+        );
+        assert_eq!(
+            env_value(&command, "HTTPS_PROXY").as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(
+            env_value(&command, "ALL_PROXY").as_deref(),
+            Some("socks5://127.0.0.1:7891")
+        );
+        assert_eq!(
+            env_value(&command, "NO_PROXY").as_deref(),
+            Some("localhost,127.0.0.1")
+        );
+        assert_eq!(
+            env_value(&command, "TZ").as_deref(),
+            Some("America/New_York")
+        );
+        assert_eq!(
+            env_value(&command, "LC_ALL").as_deref(),
+            Some("en_US.UTF-8")
+        );
     }
 }
