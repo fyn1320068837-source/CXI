@@ -136,7 +136,10 @@ impl InstanceManager {
         // Save to storage
         if let Some(ref storage) = self.storage {
             let kind_str = kind.as_str();
-            match storage.save_instance_state(kind_str, "running", Some(root_pid)) {
+            match storage
+                .save_instance_state_async(kind_str, "running", Some(root_pid))
+                .await
+            {
                 Ok(id) => tracing::info!("Saved instance state to storage: id={}", id),
                 Err(error) => {
                     let rollback = transaction.rollback().await;
@@ -169,7 +172,10 @@ impl InstanceManager {
         let adapter = self.adapter_for(kind);
         if self.runtime.stop(kind, &adapter).await? {
             if let Some(ref storage) = self.storage {
-                match storage.save_instance_state(kind.as_str(), "stopped", None) {
+                match storage
+                    .save_instance_state_async(kind.as_str(), "stopped", None)
+                    .await
+                {
                     Ok(id) => tracing::info!("Saved stopped state to storage: id={}", id),
                     Err(error) => tracing::error!("Failed to save stopped state: {}", error),
                 }
@@ -260,14 +266,17 @@ impl InstanceManager {
                         );
                     }
                     if let Some(storage) = &self.storage {
-                        if let Err(error) = storage.save_validation_evidence(
-                            kind_str,
-                            status_str,
-                            check.proxied_connections,
-                            check.local_connections,
-                            check.direct_connections.len(),
-                            &details,
-                        ) {
+                        if let Err(error) = storage
+                            .save_validation_evidence_async(
+                                kind_str,
+                                status_str,
+                                check.proxied_connections,
+                                check.local_connections,
+                                check.direct_connections.len(),
+                                &details,
+                            )
+                            .await
+                        {
                             tracing::warn!(
                                 instance = %kind_str,
                                 error = %error,
@@ -288,8 +297,9 @@ impl InstanceManager {
                     let details = format!("lsof verification failed: {}", error);
                     let kind_str = kind.as_str();
                     if let Some(storage) = &self.storage {
-                        if let Err(storage_error) =
-                            storage.save_validation_evidence(kind_str, "fail", 0, 0, 0, &details)
+                        if let Err(storage_error) = storage
+                            .save_validation_evidence_async(kind_str, "fail", 0, 0, 0, &details)
+                            .await
                         {
                             tracing::warn!(
                                 instance = %kind_str,

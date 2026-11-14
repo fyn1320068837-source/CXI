@@ -59,7 +59,7 @@ async fn get_validation_history(
         }));
     }
 
-    match state.storage.recent_validation_evidence(&kind, 50) {
+    match state.storage.recent_validation_evidence_async(&kind, 50).await {
         Ok(evidence) => Json(serde_json::json!({
             "success": true,
             "instance": kind,

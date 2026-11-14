@@ -22,6 +22,7 @@
 ./tests/test_m6_integration.sh # M6 完整生命周期
 ./tests/test_verifier.sh       # 网络验证器
 ./tests/real_proxy_integration.sh # 真实代理联调（需 CIM_RUN_REAL_PROXY=1）
+./tests/test_daemon_restart.sh   # launchd 重启后健康、状态 schema、单 daemon 验收
 ```
 
 ---

@@ -16,8 +16,8 @@ mkdir -p "${HOME}/.cim/bin"
 ln -sfn "$ROOT_DIR/target/release/cim" "$RUNTIME_BIN"
 
 launchctl kickstart -k "gui/$(id -u)/com.cim.daemon"
-for _ in $(seq 1 45); do
-    if curl -fsS --max-time 2 http://127.0.0.1:8080/health >/dev/null; then
+for _ in $(seq 1 60); do
+    if curl -fsS --max-time 2 http://127.0.0.1:8080/health >/dev/null 2>&1; then
         echo "✅ 守护进程已使用最新 release 重启"
         exit 0
     fi

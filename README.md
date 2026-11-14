@@ -29,6 +29,15 @@ cd ~/CXI
 
 脚本会重新构建并通过 launchd 重启守护进程，不需要每次再运行安装脚本或使用 `sudo`。当前命令入口是 `~/.cim/bin/cim`。
 
+### 查看和停止实例
+
+```bash
+~/.cim/bin/cim status
+~/.cim/bin/cim stop-all
+```
+
+这两个命令通过本机 daemon API 执行，不会绕过 PF 或代理健康检查。
+
 ### 配置代理
 
 打开 http://localhost:8080 → 点击「配置代理」，填入 SOCKS5 信息（密码保存在 Keychain）。

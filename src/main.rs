@@ -7,7 +7,7 @@ mod proxy;
 mod storage;
 mod verifier;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -69,7 +69,7 @@ async fn run_daemon() -> Result<()> {
     // Initialize database
     let db_path = PathBuf::from(config::Config::expand_path(&config.daemon.database_path));
     std::fs::create_dir_all(db_path.parent().unwrap())?;
-    let storage = std::sync::Arc::new(storage::Storage::new(&db_path)?);
+    let storage = open_storage(db_path.clone()).await?;
     info!("Database initialized at {:?}", db_path);
 
     // Initialize and start proxy manager
@@ -172,11 +172,19 @@ async fn init_database() -> Result<()> {
 
     std::fs::create_dir_all(db_path.parent().unwrap())?;
 
-    let _storage = storage::Storage::new(&db_path)?;
+    let _storage = open_storage(db_path.clone()).await?;
 
     println!("✓ Database initialized at {:?}", db_path);
 
     Ok(())
+}
+
+async fn open_storage(db_path: std::path::PathBuf) -> Result<std::sync::Arc<storage::Storage>> {
+    Ok(std::sync::Arc::new(
+        tokio::task::spawn_blocking(move || storage::Storage::new(&db_path))
+            .await
+            .context("database initialization task failed")??,
+    ))
 }
 
 async fn install_firewall() -> Result<()> {
@@ -205,15 +213,89 @@ async fn uninstall() -> Result<()> {
 }
 
 async fn stop_all_instances() -> Result<()> {
-    println!("Stopping all instances...");
-    println!("Not yet implemented");
+    let base_url = daemon_base_url()?;
+    let client = daemon_client()?;
+    let mut failures = Vec::new();
 
-    Ok(())
+    for kind in instance::InstanceKind::ALL {
+        let url = format!("{base_url}/api/instances/{}/stop", kind.as_str());
+        match client.post(url).send().await {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => match response.json::<serde_json::Value>().await {
+                    Ok(payload)
+                        if payload.get("success").and_then(|value| value.as_bool())
+                            == Some(false) =>
+                    {
+                        failures.push(format!("{}: {}", kind.as_str(), payload));
+                    }
+                    Ok(_) => println!("✓ {} stopped", kind.as_str()),
+                    Err(error) => failures.push(format!(
+                        "{}: invalid daemon response: {error}",
+                        kind.as_str()
+                    )),
+                },
+                Err(error) => failures.push(format!("{}: {error}", kind.as_str())),
+            },
+            Err(error) => failures.push(format!("{}: {error}", kind.as_str())),
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "failed to stop instances: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 async fn show_status() -> Result<()> {
-    println!("CIM Status");
-    println!("Not yet implemented - open http://localhost:8080");
-
+    let base_url = daemon_base_url()?;
+    let client = daemon_client()?;
+    let response = client
+        .get(format!("{base_url}/api/status"))
+        .send()
+        .await
+        .context("CIM daemon is unavailable; start `cim daemon` first")?
+        .error_for_status()
+        .context("CIM daemon returned an error while reading status")?;
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .context("CIM daemon returned invalid status JSON")?;
+    println!("{}", serde_json::to_string_pretty(&payload)?);
     Ok(())
+}
+
+fn daemon_base_url() -> Result<String> {
+    let config = config::Config::load()?;
+    Ok(daemon_url_for_listen_addr(&config.daemon.listen_addr))
+}
+
+fn daemon_url_for_listen_addr(listen_addr: &str) -> String {
+    format!("http://{listen_addr}")
+}
+
+fn daemon_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("failed to create local daemon HTTP client")
+}
+
+#[cfg(test)]
+mod cli_tests {
+    #[test]
+    fn daemon_url_uses_config_listen_address() {
+        assert_eq!(
+            super::daemon_url_for_listen_addr("127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            super::daemon_url_for_listen_addr("[::1]:8080"),
+            "http://[::1]:8080"
+        );
+    }
 }

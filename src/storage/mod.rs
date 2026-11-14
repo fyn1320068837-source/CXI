@@ -3,7 +3,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
@@ -16,8 +16,9 @@ pub struct InstanceState {
     pub stopped_at: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Storage {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,7 +35,7 @@ impl Storage {
     pub fn new(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         let storage = Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         };
         storage.initialize_schema()?;
         Ok(storage)
@@ -136,6 +137,20 @@ impl Storage {
         Ok(())
     }
 
+    /// Run the synchronous SQLite write away from the Tokio worker thread.
+    pub async fn save_instance_state_async(
+        &self,
+        kind: &str,
+        status: &str,
+        root_pid: Option<u32>,
+    ) -> Result<i64> {
+        let storage = self.clone();
+        let kind = kind.to_owned();
+        let status = status.to_owned();
+        tokio::task::spawn_blocking(move || storage.save_instance_state(&kind, &status, root_pid))
+            .await?
+    }
+
     pub fn save_instance_state(
         &self,
         kind: &str,
@@ -162,6 +177,33 @@ impl Storage {
     /// instance state of the given kind. The evidence is intentionally a
     /// summary: direct endpoints are already included in `details`, while the
     /// numeric counters make the result easy to query and aggregate.
+    /// Run the synchronous SQLite evidence write off the async executor.
+    pub async fn save_validation_evidence_async(
+        &self,
+        kind: &str,
+        status: &str,
+        proxied_count: usize,
+        local_count: usize,
+        direct_count: usize,
+        details: &str,
+    ) -> Result<()> {
+        let storage = self.clone();
+        let kind = kind.to_owned();
+        let status = status.to_owned();
+        let details = details.to_owned();
+        tokio::task::spawn_blocking(move || {
+            storage.save_validation_evidence(
+                &kind,
+                &status,
+                proxied_count,
+                local_count,
+                direct_count,
+                &details,
+            )
+        })
+        .await?
+    }
+
     pub fn save_validation_evidence(
         &self,
         kind: &str,
@@ -209,6 +251,18 @@ impl Storage {
         Ok(())
     }
 
+    /// Read recent evidence without holding a SQLite mutex on an async task.
+    pub async fn recent_validation_evidence_async(
+        &self,
+        kind: &str,
+        limit: usize,
+    ) -> Result<Vec<ValidationEvidence>> {
+        let storage = self.clone();
+        let kind = kind.to_owned();
+        tokio::task::spawn_blocking(move || storage.recent_validation_evidence(&kind, limit))
+            .await?
+    }
+
     pub fn recent_validation_evidence(
         &self,
         kind: &str,
@@ -240,6 +294,13 @@ impl Storage {
     }
 
     #[allow(dead_code)]
+    /// Read the latest state without blocking the Tokio executor.
+    pub async fn get_instance_state_async(&self, kind: &str) -> Result<Option<InstanceState>> {
+        let storage = self.clone();
+        let kind = kind.to_owned();
+        tokio::task::spawn_blocking(move || storage.get_instance_state(&kind)).await?
+    }
+
     pub fn get_instance_state(&self, kind: &str) -> Result<Option<InstanceState>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -262,6 +323,43 @@ impl Storage {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Storage;
+
+    #[tokio::test]
+    async fn async_storage_wrappers_round_trip_without_blocking_callers() {
+        let path =
+            std::env::temp_dir().join(format!("cim-storage-async-{}.db", uuid::Uuid::new_v4()));
+        let storage = Storage::new(&path).expect("temporary database should open");
+
+        storage
+            .save_instance_state_async("web", "running", Some(4242))
+            .await
+            .unwrap();
+        let state = storage
+            .get_instance_state_async("web")
+            .await
+            .unwrap()
+            .expect("saved instance state should be readable");
+        assert_eq!(state.root_pid, Some(4242));
+
+        storage
+            .save_validation_evidence_async("web", "pass", 2, 1, 0, "proxied=2")
+            .await
+            .unwrap();
+        let evidence = storage
+            .recent_validation_evidence_async("web", 1)
+            .await
+            .unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].proxied_count, 2);
+
+        drop(storage);
+        let _ = std::fs::remove_file(path);
     }
 }
 

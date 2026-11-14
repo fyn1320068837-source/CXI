@@ -13,8 +13,8 @@
 1. ✅ 抽出 `InstanceRuntime`，集中处理启动预留、句柄发布、停止和失败回滚。
 2. ✅ 将 `api/mod.rs` 拆为状态、实例、代理、日志、安全结论和 WebSocket handler；只移动代码，不改变 API。
 3. ✅ 将 `web.rs` 拆为生命周期和 CDP/请求监控模块。
-4. 把同步 SQLite 操作统一放入 `spawn_blocking`，避免阻塞 Axum/Tokio worker。
-5. 补齐 `cim status` 和 `cim stop-all`，作为 daemon 重启后的 smoke test。
+4. ✅ 把同步 SQLite 操作统一放入 `spawn_blocking`，避免阻塞 Axum/Tokio worker。
+5. ✅ 补齐 `cim status`、`cim stop-all` 和 launchd daemon 重启 smoke test。
 
 每个小步都运行 `cargo fmt --check`、`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`，再跑真实代理 Web 回归。
 

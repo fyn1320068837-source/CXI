@@ -58,7 +58,8 @@ async fn get_web_security(
     let validation_checked_at = validation.and_then(|value| value.checked_at.clone());
     let evidence = state
         .storage
-        .recent_validation_evidence("web", 1)
+        .recent_validation_evidence_async("web", 1)
+        .await
         .ok()
         .and_then(|values| values.into_iter().next());
     let details = evidence
