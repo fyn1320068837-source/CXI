@@ -184,7 +184,8 @@
 - **Desktop Tart/Apple VM PoC（进行中）**
    - 本机已确认 Apple Silicon、macOS 26.6.2 和 `Virtualization.framework` 可用。
    - 已加入只读检查及显式 `prepare/run/verify/stop` 脚本；不会自动安装 Tart、下载镜像或修改宿主网络。
-   - 当前阻塞点是 Tart 和 macOS VM 镜像尚未安装；宿主代理仍只监听 `127.0.0.1`，不能直接作为 VM 网关。
+   - Tart 2.41.1 已安装；macOS VM 镜像下载约 57% 时因网络超时中止，当前没有半成品 VM。
+   - 宿主代理仍只监听 `127.0.0.1`，不能直接作为 VM 网关；需要先设计受控的 VM 可达代理监听。
    - 在健康、代理断开、恢复三阶段证据完成前，Desktop 继续保持 `UNSUPPORTED`。
 
 - **交付**

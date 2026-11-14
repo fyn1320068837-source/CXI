@@ -3,8 +3,9 @@
 ## 当前结论
 
 本机已经满足 Apple VM 的硬件和系统条件：Apple Silicon（arm64）、macOS 26.6.2，
-`Virtualization.framework` 可用。当前没有安装 Tart，也没有本地 macOS VM 镜像，因此
-PoC 还没有进入真实 VM 联调；Claude Desktop 继续标记为 `UNSUPPORTED`。
+`Virtualization.framework` 可用。Tart 2.41.1 已安装，但 macOS VM 镜像下载在网络层
+约 57% 处多次超时并已中止，当前没有本地 VM，因此 PoC 还没有进入真实 VM 联调；Claude
+Desktop 继续标记为 `UNSUPPORTED`。
 
 Colima/Lima 只适合容器或 CLI 场景，不能作为 Claude Desktop Electron 的隔离后端。
 PoC 不会把宿主机 `open -a Claude` 误报为已隔离实例，也不会自动修改宿主代理、PF 或
@@ -104,7 +105,7 @@ CIM_DESKTOP_PROXY_HOST=<宿主机可达地址> \
 | CPU/架构 | Apple M3 Pro / arm64 |
 | macOS | 26.6.2 |
 | Virtualization.framework | 已存在 |
-| Tart | 未安装 |
+| Tart | 2.41.1，已安装 |
 | macOS VM 镜像 | 不存在 |
 | Colima/Lima | 已安装，但不作为 Desktop 后端 |
 | 当前 Desktop backend | 宿主机软隔离，`UNSUPPORTED` |
