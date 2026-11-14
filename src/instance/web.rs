@@ -1,7 +1,7 @@
 // Claude Web in Chromium adapter (Instance D)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
-    InstanceAdapter, ProcessHandle, RequestLogEntry, RequestLogSender,
+    apply_locale_env, descendant_pids, isolated_command, CapabilityReport, InstanceAdapter,
+    ProcessHandle, RequestLogEntry, RequestLogSender,
 };
 use crate::geoip::{GeoProfile, SharedGeoProfile};
 use anyhow::{Context, Result};
@@ -39,6 +39,10 @@ impl WebAdapter {
 
     pub fn set_request_log_sender(&mut self, sender: RequestLogSender) {
         self.request_log_tx = Some(sender);
+    }
+
+    pub async fn cleanup_orphaned_sessions(&self) -> anyhow::Result<()> {
+        lifecycle::cleanup_orphaned_sessions(self).await
     }
 }
 

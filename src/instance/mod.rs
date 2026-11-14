@@ -184,6 +184,27 @@ pub fn isolated_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
+/// Resolve an instance executable using the daemon's PATH and common macOS
+/// installation locations. launchd intentionally starts with a small PATH,
+/// so relying on `which` alone would miss Homebrew and app-bundled CLIs.
+pub(crate) fn resolve_executable(candidates: &[&str]) -> Option<String> {
+    candidates.iter().find_map(|candidate| {
+        if candidate.contains('/') {
+            return Path::new(candidate)
+                .is_file()
+                .then(|| (*candidate).to_string());
+        }
+        Command::new("which")
+            .arg(candidate)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 /// Enumerate a process and all descendants using the portable macOS pgrep
 /// parent query. Failed/vanished children are ignored because the verifier
 /// should inspect the processes that still exist at the instant of the check.
@@ -210,6 +231,26 @@ pub fn descendant_pids(root_pid: u32) -> Vec<u32> {
         }
     }
     result
+}
+
+/// Terminate a captured set of instance processes, including helpers that
+/// have already detached from the root process. PIDs come from either the
+/// process tree or the unique Web session marker and are best-effort.
+pub async fn terminate_processes(pids: &[u32]) {
+    let mut captured = pids.to_vec();
+    // A marker can identify a detached shell/helper rather than the original
+    // browser root. Include its descendants before signalling so the helper
+    // cannot orphan a long-running child when the shell exits.
+    for pid in pids {
+        for descendant in descendant_pids(*pid) {
+            if !captured.contains(&descendant) {
+                captured.push(descendant);
+            }
+        }
+    }
+    signal_process_tree(&captured, nix::sys::signal::Signal::SIGTERM);
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+    signal_process_tree(&captured, nix::sys::signal::Signal::SIGKILL);
 }
 
 /// Terminate an instance and every descendant process that belongs to its
@@ -239,6 +280,9 @@ fn signal_process_tree(pids: &[u32], signal: nix::sys::signal::Signal) {
     // Signal children before their root so process-group helpers have a
     // chance to flush and exit without leaving grandchildren behind.
     for pid in pids.iter().rev() {
+        if *pid == 0 || *pid > i32::MAX as u32 {
+            continue;
+        }
         let _ = kill(Pid::from_raw(*pid as i32), signal);
     }
 }

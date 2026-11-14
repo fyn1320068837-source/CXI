@@ -1,7 +1,8 @@
 // VS Code Claude extension adapter (Instance C)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
-    InstanceAdapter, ProcessHandle, HTTP_PROXY_ENDPOINT,
+    apply_locale_env, descendant_pids, isolated_command, resolve_executable,
+    terminate_process_tree, terminate_processes, CapabilityReport, InstanceAdapter, ProcessHandle,
+    HTTP_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::Result;
@@ -49,21 +50,55 @@ fn configure_vscode_command(
     apply_locale_env(command, profile);
 }
 
+fn parse_processes_with_user_data(output: &str, user_data_dir: &str) -> Vec<u32> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let arguments = fields.collect::<Vec<_>>();
+            let marker = format!("--user-data-dir={user_data_dir}");
+            let matches = arguments.iter().any(|argument| *argument == marker)
+                || arguments
+                    .windows(2)
+                    .any(|pair| pair == ["--user-data-dir", user_data_dir]);
+            matches.then(|| pid.parse::<u32>().ok()).flatten()
+        })
+        .collect()
+}
+
+fn processes_with_user_data(user_data_dir: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
+        return Vec::new();
+    };
+    parse_processes_with_user_data(&String::from_utf8_lossy(&output.stdout), user_data_dir)
+}
+
+async fn terminate_vscode_processes(root_pid: u32, user_data_dir: &str) {
+    let marker = user_data_dir.to_owned();
+    let marker_pids = tokio::task::spawn_blocking(move || processes_with_user_data(&marker))
+        .await
+        .unwrap_or_default();
+    terminate_process_tree(root_pid).await;
+    if !marker_pids.is_empty() {
+        terminate_processes(&marker_pids).await;
+    }
+}
+
 #[async_trait]
 impl InstanceAdapter for VsCodeAdapter {
     async fn detect(&self) -> CapabilityReport {
         // Check if `code` CLI is available
-        let output = Command::new("which").arg("code").output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                CapabilityReport {
-                    installed: true,
-                    version: None,
-                    path: Some(path),
-                }
-            }
+        match resolve_executable(&[
+            "code",
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+            "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code",
+        ]) {
+            Some(path) => CapabilityReport {
+                installed: true,
+                version: None,
+                path: Some(path),
+            },
             _ => CapabilityReport {
                 installed: false,
                 version: None,
@@ -117,18 +152,27 @@ impl InstanceAdapter for VsCodeAdapter {
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
-        terminate_process_tree(handle.root_pid).await;
+        terminate_vscode_processes(handle.root_pid, &self.user_data_dir).await;
         Ok(())
     }
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
-        descendant_pids(handle.root_pid)
+        let user_data_dir = self.user_data_dir.clone();
+        let marker_pids =
+            tokio::task::spawn_blocking(move || processes_with_user_data(&user_data_dir))
+                .await
+                .unwrap_or_default();
+        let mut pids = descendant_pids(handle.root_pid);
+        pids.extend(marker_pids);
+        pids.sort_unstable();
+        pids.dedup();
+        pids
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::configure_vscode_command;
+    use super::{configure_vscode_command, parse_processes_with_user_data};
     use crate::geoip::GeoProfile;
     use std::process::Command;
 
@@ -172,6 +216,18 @@ mod tests {
         assert_eq!(
             env_value(&command, "LC_ALL").as_deref(),
             Some("zh_CN.UTF-8")
+        );
+    }
+
+    #[test]
+    fn user_data_marker_matches_both_chromium_argument_forms() {
+        let data_dir = "/tmp/cim-vscode-data";
+        let ps = format!(
+            " 101 code --user-data-dir {data_dir}\n 102 helper --user-data-dir={data_dir}-other\n 103 code --user-data-dir={data_dir}\n"
+        );
+        assert_eq!(
+            parse_processes_with_user_data(&ps, data_dir),
+            vec![101, 103]
         );
     }
 }

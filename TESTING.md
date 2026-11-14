@@ -25,6 +25,34 @@
 ./tests/test_daemon_restart.sh   # launchd 重启后健康、状态 schema、单 daemon 验收
 ```
 
+真实 Code/VS Code 回归会启动实际桌面客户端，因此默认不纳入
+`run-all.sh`，必须显式选择实例。运行前确认 `claude` CLI 已安装，VS Code
+已安装且 `code` CLI 在 PATH 或标准 app bundle 路径可用；缺少客户端、代理或守护进程时脚本会
+直接失败，不会把未执行误报为通过：
+
+```bash
+# 只验证 Claude Code（独立 HOME、GeoIP TZ/LANG、HTTP(S)/SOCKS 代理、lsof）
+CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=code \
+  ./tests/real_proxy_integration.sh
+
+# 只验证 VS Code（独立 user-data/extensions、locale、HTTP 代理、lsof）
+CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=vscode \
+  ./tests/real_proxy_integration.sh
+
+# 一次验证 Code、VS Code 和 Web
+CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=code,vscode,web \
+  ./tests/real_proxy_integration.sh
+```
+
+每个实例都会检查 API 报告的 `direct=0`、无直连端点，并在产生外部流量时要求
+`proxied>0`；脚本还会递归检查 PF 隔离 helper 的后代进程，确认实例连接只到本地代理端口；脚本结束时
+会停止本轮启动的实例。
+
+Claude Code 默认启动交互会话，若本轮没有产生外部请求，验证状态会显示
+`unknown / no_proxy_connection_observed`；此时脚本仍要求 `direct=0`，并以
+`lsof` 检查现有后代连接。需要强制要求 Code 产生代理流量时设置
+`CIM_CODE_REQUIRE_TRAFFIC=1`，再配合可触发请求的 Code 会话运行。
+
 ---
 
 ## 验收测试矩阵

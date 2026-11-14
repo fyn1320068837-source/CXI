@@ -4,24 +4,34 @@ use super::*;
 /// can be briefly reparented during a crash or restart. Match the unique
 /// per-launch user-data directory as a second signal so validation still
 /// covers that helper while never sweeping in another browser profile.
-pub(super) fn processes_using_session_dir(session_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
-        return Vec::new();
-    };
-
+fn command_uses_session_dir(command: &str, session_dir: &str) -> bool {
     let marker = format!("--user-data-dir={session_dir}");
-    String::from_utf8_lossy(&output.stdout)
+    command
+        .split_whitespace()
+        .any(|argument| argument == marker)
+}
+
+fn parse_session_processes(output: &str, session_dir: &str) -> Vec<u32> {
+    output
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let pid = fields.next()?;
             let command = fields.collect::<Vec<_>>().join(" ");
-            if !command.contains(&marker) {
+            if !command_uses_session_dir(&command, session_dir) {
                 return None;
             }
             pid.trim().parse().ok()
         })
         .collect()
+}
+
+pub(super) fn processes_using_session_dir(session_dir: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
+        return Vec::new();
+    };
+
+    parse_session_processes(&String::from_utf8_lossy(&output.stdout), session_dir)
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -973,4 +983,73 @@ where
     .context("Timed out waiting for Chrome DevTools response")??;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod session_marker_tests {
+    use super::{command_uses_session_dir, parse_session_processes, processes_using_session_dir};
+
+    #[test]
+    fn marker_matches_only_the_full_session_path() {
+        let session = "/tmp/cim-web/sessions/abc";
+        assert!(command_uses_session_dir(
+            "Chrome --user-data-dir=/tmp/cim-web/sessions/abc --type=renderer",
+            session
+        ));
+        assert!(!command_uses_session_dir(
+            "Chrome --user-data-dir=/tmp/cim-web/sessions/abcd --type=renderer",
+            session
+        ));
+        assert!(!command_uses_session_dir(
+            "Chrome --user-data-dir=/tmp/other --type=renderer",
+            session
+        ));
+    }
+
+    #[test]
+    fn parser_collects_only_processes_with_exact_session_marker() {
+        let session = "/tmp/cim-web/sessions/abc";
+        let ps = format!(
+            " 101 Chrome --user-data-dir={session} --type=renderer\n 102 Chrome --user-data-dir={session}d --type=renderer\n 103 /bin/sh -c --user-data-dir=/tmp/other sleep 30\n"
+        );
+        assert_eq!(parse_session_processes(&ps, session), vec![101]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detached_marker_helper_is_detected_and_terminated() {
+        use crate::instance::terminate_processes;
+        use std::process::Command;
+        use uuid::Uuid;
+
+        let session = std::env::temp_dir().join(format!("cim-web-session-{}", Uuid::new_v4()));
+        let session = session.to_string_lossy().into_owned();
+        let marker_arg = format!("--user-data-dir={session}");
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait", &marker_arg])
+            .spawn()
+            .expect("shell is required for detached marker cleanup test");
+
+        // Give the shell time to create the sleep helper. In the Codex app
+        // sandbox `ps` can be denied; that environment cannot observe marker
+        // PIDs, so clean up the root and leave the opt-in macOS regression to
+        // the real proxy integration script.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let marker_pids = processes_using_session_dir(&session);
+        if marker_pids.is_empty() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+
+        assert!(marker_pids.contains(&child.id()));
+        terminate_processes(&marker_pids).await;
+        for _ in 0..20 {
+            if child.try_wait().expect("poll detached helper").is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("detached marker helper {} survived cleanup", child.id());
+    }
 }

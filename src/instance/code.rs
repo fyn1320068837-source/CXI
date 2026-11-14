@@ -1,7 +1,8 @@
 // Claude Code CLI adapter (Instance A)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, terminate_process_tree, CapabilityReport,
-    InstanceAdapter, ProcessHandle, HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
+    apply_locale_env, descendant_pids, isolated_command, resolve_executable,
+    terminate_process_tree, terminate_processes, CapabilityReport, InstanceAdapter, ProcessHandle,
+    HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::Result;
@@ -36,15 +37,54 @@ fn configure_code_command(
     apply_locale_env(command, profile);
 }
 
+fn parse_processes_with_home(output: &str, profile_dir: &str) -> Vec<u32> {
+    let marker = format!("HOME={profile_dir}");
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let command = fields.collect::<Vec<_>>().join(" ");
+            command
+                .split_whitespace()
+                .any(|argument| argument == marker)
+                .then(|| pid.parse::<u32>().ok())
+                .flatten()
+        })
+        .collect()
+}
+
+fn processes_with_home(profile_dir: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps")
+        .args(["-eww", "-axo", "pid=,command="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_processes_with_home(&String::from_utf8_lossy(&output.stdout), profile_dir)
+}
+
+async fn terminate_code_processes(root_pid: u32, profile_dir: &str) {
+    let marker = profile_dir.to_owned();
+    let marker_pids = tokio::task::spawn_blocking(move || processes_with_home(&marker))
+        .await
+        .unwrap_or_default();
+    terminate_process_tree(root_pid).await;
+    if !marker_pids.is_empty() {
+        terminate_processes(&marker_pids).await;
+    }
+}
+
 #[async_trait]
 impl InstanceAdapter for CodeAdapter {
     async fn detect(&self) -> CapabilityReport {
         // Check if `claude` CLI is available
-        let output = Command::new("which").arg("claude").output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        match resolve_executable(&[
+            "claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]) {
+            Some(path) => {
                 // Try to get version
                 let version = Command::new(&path)
                     .arg("--version")
@@ -59,7 +99,7 @@ impl InstanceAdapter for CodeAdapter {
                     path: Some(path),
                 }
             }
-            _ => CapabilityReport {
+            None => CapabilityReport {
                 installed: false,
                 version: None,
                 path: None,
@@ -91,18 +131,26 @@ impl InstanceAdapter for CodeAdapter {
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
-        terminate_process_tree(handle.root_pid).await;
+        terminate_code_processes(handle.root_pid, &self.profile_dir).await;
         Ok(())
     }
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
-        descendant_pids(handle.root_pid)
+        let profile_dir = self.profile_dir.clone();
+        let marker_pids = tokio::task::spawn_blocking(move || processes_with_home(&profile_dir))
+            .await
+            .unwrap_or_default();
+        let mut pids = descendant_pids(handle.root_pid);
+        pids.extend(marker_pids);
+        pids.sort_unstable();
+        pids.dedup();
+        pids
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::configure_code_command;
+    use super::{configure_code_command, parse_processes_with_home};
     use crate::geoip::GeoProfile;
     use std::process::Command;
 
@@ -146,5 +194,14 @@ mod tests {
             env_value(&command, "LC_ALL").as_deref(),
             Some("en_US.UTF-8")
         );
+    }
+
+    #[test]
+    fn home_marker_matches_only_the_code_profile() {
+        let profile = "/tmp/cim-code-home";
+        let ps = format!(
+            " 101 claude HOME={profile} TZ=America/New_York\n 102 helper HOME={profile}-other\n"
+        );
+        assert_eq!(parse_processes_with_home(&ps, profile), vec![101]);
     }
 }

@@ -3,7 +3,7 @@
 **项目**: Claude Instance Manager (CIM)  
 **版本**: v1.0.0-dev  
 **日期**: 2026-11-13
-**当前阶段**: 真实代理与 Web 泄漏验收完成，进入结构整理和实例隔离方案收敛
+**当前阶段**: P0/P1 结构整理与实例运行时验收完成，进入 Desktop 隔离 PoC
 
 ---
 
@@ -17,8 +17,8 @@
 ✅ M3 实例    [████████] 100%  (3天) - Code/Web 已验证
 ✅ M4 验证    [████████] 100%  (3天) - Web 专属进程级与包级 DNS 已完成
 ⬜ M5 B实例   [        ]   0%  (2天)
-🟡 M6 测试    [███████ ]  85%  (3天) - 真实代理、WebRTC、DNS、断开恢复已实测
-🟡 M7 交付    [█████   ]  60%  (2天) - 进入结构整理和隔离方案 PoC
+🟡 M6 测试    [███████ ]  90%  (3天) - 真实代理、WebRTC、DNS、断开恢复、Code 回归已实测
+🟡 M7 交付    [██████  ]  70%  (2天) - P0/P1 已完成，等待 VS Code 环境与 Desktop PoC
 
 总进度: 17/21 天 (81%)
 下一阶段: 先完成无行为变化的结构整理，再做 Desktop VM 隔离 PoC
@@ -78,6 +78,7 @@
 - 新标签页/弹窗已加入 CDP `Target.setAutoAttach`：当前 release 实测新标签页首个文档仍为 `en-US`、`America/New_York`，并产生正常请求日志；新页验证为 `proxied=6, local=18, direct=0`。
 - launchd 已切换到用户目录的稳定入口 `~/.cim/bin/cim`，该入口指向工作区 `target/release/cim`；首次安装仍负责安装 root-owned helper，后续代码更新执行 `./scripts/restart-daemon.sh` 即可构建并重启，无需再次 `sudo cp`。plist 保留 `WatchPaths`，用于守护进程未运行时的重新拉起。
 - VS Code 联调已执行，但当前主机没有 `code` 命令或 VS Code.app，启动结果记录为“未安装”。
+- Claude Code 已在 launchd 环境下完成真实回归：Homebrew CLI 可被发现，实例使用独立 HOME、GeoIP TZ/LANG 和 127.0.0.1:7890/7891；递归 lsof 未发现直连。
 - Web Chrome 网络子进程的 lsof 样本显示外部 TCP 连接均到 `127.0.0.1:7891`，本地 mDNS UDP 保持本地分类。
 - Web 全面泄漏评估已补强：Chrome 禁用 QUIC 和非代理 WebRTC UDP；sing-box 生成 `ipv4_only` DoH 并经 `upstream` 出站；`/api/status` 现在返回验证时间和连接证据，`/api/validation/web` 返回最近历史，SQLite 每实例保留最多 500 条证据。
 - 2026-11-12 真实 Web 复测：`checked 11 pids; proxied=14, local=18, direct=0`，递归 lsof 未发现 UDP 53，公网连接未出现在 Web 进程树；生成的 sing-box 配置通过 `sing-box check`，真实代理脚本新增 WebRTC/QUIC、DNS UDP 和历史证据断言。
@@ -86,7 +87,7 @@
 - 2026-11-13 已完成 Web 专属 root tcpdump：在 `en0` 上抓包 60 秒捕获 10 个 UDP/53 包，但没有 CIM Web 唯一随机探测域名；Web 进程树 `udp53=0`，外部连接仍到 `127.0.0.1:7891`。抓包同时确认主机其他应用仍会访问 `114.114.114.114:53`，因此结论限定为 Web 实例无观察到 DNS 直连，整机仍存在其他应用 DNS。
 - 钥匙串授权已简化：守护进程现在优先读取权限为 0600 的现有 sing-box 配置，只有首次迁移或配置缺密码时才调用 `security`；普通 launchd 重启和 release 更新不再重复触发 `com.cim.proxy` 弹窗。
 - App 管理授权已改为固定签名流程：安装和重启脚本复用本机签名身份，并用固定 `com.cim.daemon` identifier 签名，避免 ad-hoc cdhash 随每次编译变化。首次切换到新签名需在 macOS 设置中确认一次。
-- P0/P1 Web 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏。
+- P0/P1 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏；Code/VS Code/Web 分别按 HOME、user-data/extensions 和 session marker 发现进程，停止与 daemon 重启会清理孤儿 helper 和残留目录。
 
 ---
 
@@ -152,10 +153,9 @@
 完整执行顺序见 [docs/next-plan.md](docs/next-plan.md)，实例隔离分层见
 [docs/instance-isolation-plan.md](docs/instance-isolation-plan.md)。当前优先级是：
 
-1. 完成 API、实例生命周期和 Web CDP 的无行为变化拆分。
-2. 统一启动失败回滚、孤儿进程清理和验证结论。
-3. Code/VS Code 完成真实环境复测。
-4. Desktop 保持 `UNSUPPORTED`，先做 Tart/Apple VM PoC。
+1. 在安装 VS Code 的主机执行 `CIM_REAL_PROXY_INSTANCES=vscode` 真实回归。
+2. Desktop 保持 `UNSUPPORTED`，完成 Tart/Apple VM PoC。
+3. 继续维护 PF、GeoIP 和实例进程回归证据。
 
 已完成的基础项：
 
@@ -172,10 +172,10 @@
    - 安装 root-owned `/usr/local/libexec/cim-instance-launch`，启动前设置用户 supplementary
      groups 和有效 GID，再降权执行实例程序。
    - Web 已通过 helper 启动并完成 `proxied=25, direct=0`；代理断开时同一 helper 的公网直连超时，恢复后 PF 自动放行。
-   - Code CLI 与 VS Code CLI 当前未安装，保留为环境补测项。
+   - Claude Code 已完成真实回归；当前主机没有 VS Code，保留 VS Code 环境补测项。
 
 - **VS Code 环境复测**
-   - 安装或提供 VS Code `code` 命令后，验证 `--locale`、TZ/LANG/LC_ALL 和 lsof。
+   - 安装或提供 VS Code `code` 命令后，运行 `CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=vscode ./tests/real_proxy_integration.sh`，验证 `--locale`、独立 data/extensions、代理和 lsof。
 
 - **Desktop 隔离方案评估**
    - 比较 Tart/Colima VM、独立用户会话和 macOS App 沙盒。
@@ -238,7 +238,7 @@ tx.send(status_json)?;
 - 实例进程现在通过 root-owned `cim-instance-launch` 降权到 `cimgrp` 后启动；daemon 和
   sing-box 仍保持普通用户身份，PF 规则不再只停留在手工组进程验证层。
 - Desktop 尚未进入 VM 或独立启动环境，保持 `UNSUPPORTED`。
-- 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测。
+- 当前主机没有 VS Code，VS Code 运行时覆盖和连接验证待安装后复测；适配器已支持 PATH 和标准 app bundle 路径发现。
 - Claude 登录页的 Permissions-Policy 可能阻止脚本读取 geolocation；CDP 覆盖命令仍会发送。
 - 新版浏览器首屏、请求日志、DevTools 超时和新标签页自动接管已通过 `cargo check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`；launchd 当前运行 `~/.cim/bin/cim`，新 release 可通过 `./scripts/restart-daemon.sh` 无 sudo 更新。
 
@@ -274,13 +274,13 @@ pkill -f "cim daemon"
 
 ## 👥 团队状态
 
-**开发进度**: 真实代理联调已完成
+**开发进度**: P0/P1 结构整理、Web/Code 真实代理联调已完成
 **代码质量**: `cargo check` 无警告
 **文档完备**: 联调、PF 和 Desktop 限制已记录
-**测试覆盖**: 9 个 Rust 单测 + 可选真实代理集成脚本
+**测试覆盖**: 30 个 Rust 单测 + 可选 Code/VS Code/Web 真实代理集成脚本
 
 ---
 
-**报告生成**: 2026-11-11  
-**下次更新**: PF 演练或 VS Code 安装后
-**状态**: 🟡 代理链路通过，等待主机级 PF 与 VS Code 条件
+**报告生成**: 2026-11-13
+**下次更新**: VS Code 安装后或 Desktop VM PoC 完成后
+**状态**: 🟡 代理链路和 P1 运行时通过，等待 VS Code 条件与 Desktop 隔离方案

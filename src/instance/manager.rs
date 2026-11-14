@@ -71,6 +71,10 @@ impl InstanceManager {
         self
     }
 
+    pub async fn cleanup_orphaned_sessions(&self) -> Result<()> {
+        self.web.cleanup_orphaned_sessions().await
+    }
+
     fn adapter_for(&self, kind: InstanceKind) -> Arc<dyn InstanceAdapter> {
         match kind {
             InstanceKind::Code => self.code.clone(),

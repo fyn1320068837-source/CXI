@@ -74,12 +74,14 @@ pub async fn create_router(
         }
     });
 
-    let instance_manager = Arc::new(RwLock::new(
-        InstanceManager::with_geo_profile(geo_profile.clone())
-            .with_allow_lan(allow_lan)
-            .with_request_log_sender(request_log_tx)
-            .with_storage(storage.clone()),
-    ));
+    let instance_manager = InstanceManager::with_geo_profile(geo_profile.clone())
+        .with_allow_lan(allow_lan)
+        .with_request_log_sender(request_log_tx)
+        .with_storage(storage.clone());
+    if let Err(error) = instance_manager.cleanup_orphaned_sessions().await {
+        tracing::warn!(error = %error, "Failed to clean orphaned Web sessions");
+    }
+    let instance_manager = Arc::new(RwLock::new(instance_manager));
 
     let state = AppState {
         tx,

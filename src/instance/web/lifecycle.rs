@@ -3,8 +3,74 @@ use super::cdp::{
     monitor_browser_targets, processes_using_session_dir,
 };
 use super::*;
-use crate::instance::SOCKS_PROXY_ENDPOINT;
+use crate::instance::{terminate_process_tree, terminate_processes, SOCKS_PROXY_ENDPOINT};
 use async_trait::async_trait;
+
+async fn terminate_web_processes(root_pid: u32, session_dir: Option<&str>) {
+    let marker_pids = if let Some(session_dir) = session_dir {
+        let marker = session_dir.to_owned();
+        tokio::task::spawn_blocking(move || processes_using_session_dir(&marker))
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    terminate_process_tree(root_pid).await;
+
+    if let Some(session_dir) = session_dir {
+        let marker = session_dir.to_owned();
+        let remaining_marker_pids =
+            tokio::task::spawn_blocking(move || processes_using_session_dir(&marker))
+                .await
+                .unwrap_or_default();
+        let mut pids = marker_pids;
+        pids.extend(remaining_marker_pids);
+        pids.sort_unstable();
+        pids.dedup();
+        if !pids.is_empty() {
+            terminate_processes(&pids).await;
+        }
+    }
+}
+
+pub(crate) async fn cleanup_orphaned_sessions(adapter: &WebAdapter) -> Result<()> {
+    let sessions_root = std::path::Path::new(&adapter.user_data_dir).join("sessions");
+    if !sessions_root.exists() {
+        return Ok(());
+    }
+
+    let active_sessions = adapter
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+
+    for entry in std::fs::read_dir(&sessions_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path_string = path.to_string_lossy().into_owned();
+        if active_sessions.contains(&path_string) {
+            continue;
+        }
+
+        let marker = path_string.clone();
+        let marker_pids = tokio::task::spawn_blocking(move || processes_using_session_dir(&marker))
+            .await
+            .unwrap_or_default();
+        if !marker_pids.is_empty() {
+            terminate_processes(&marker_pids).await;
+        }
+        std::fs::remove_dir_all(&path)?;
+        tracing::info!(session_dir = %path_string, "Removed orphaned Web session");
+    }
+    Ok(())
+}
 
 fn browser_launch_args(session_dir: &str, debug_port: u16, profile: &GeoProfile) -> Vec<String> {
     let mut args = vec![
@@ -62,6 +128,7 @@ impl InstanceAdapter for WebAdapter {
 
     async fn prepare(&self) -> Result<()> {
         std::fs::create_dir_all(&self.user_data_dir)?;
+        cleanup_orphaned_sessions(self).await?;
         Ok(())
     }
 
@@ -108,7 +175,7 @@ impl InstanceAdapter for WebAdapter {
                             chain = %format!("{:#}", error),
                             "Failed to apply browser locale/timezone profile"
                         );
-                        terminate_process_tree(root_pid).await;
+                        terminate_web_processes(root_pid, Some(&session_dir)).await;
                         let _ = std::fs::remove_dir_all(&session_dir);
                         return Err(
                             error.context("Failed to apply browser locale/timezone profile")
@@ -149,8 +216,9 @@ impl InstanceAdapter for WebAdapter {
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
-        terminate_process_tree(handle.root_pid).await;
-        if let Some(session_dir) = self.sessions.lock().unwrap().remove(&handle.root_pid) {
+        let session_dir = self.sessions.lock().unwrap().remove(&handle.root_pid);
+        terminate_web_processes(handle.root_pid, session_dir.as_deref()).await;
+        if let Some(session_dir) = session_dir {
             let _ = std::fs::remove_dir_all(session_dir);
         }
         Ok(())
@@ -158,8 +226,14 @@ impl InstanceAdapter for WebAdapter {
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
         let mut pids = descendant_pids(handle.root_pid);
-        if let Some(session_dir) = self.sessions.lock().unwrap().get(&handle.root_pid).cloned() {
-            pids.extend(processes_using_session_dir(&session_dir));
+        let session_dir = self.sessions.lock().unwrap().get(&handle.root_pid).cloned();
+        if let Some(session_dir) = session_dir {
+            let marker = session_dir;
+            let marker_pids =
+                tokio::task::spawn_blocking(move || processes_using_session_dir(&marker))
+                    .await
+                    .unwrap_or_default();
+            pids.extend(marker_pids);
         }
         pids.sort_unstable();
         pids.dedup();
@@ -170,7 +244,10 @@ impl InstanceAdapter for WebAdapter {
 #[cfg(test)]
 mod tests {
     use super::browser_launch_args;
-    use crate::geoip::GeoProfile;
+    use crate::geoip::{shared_profile, GeoProfile};
+    use crate::instance::WebAdapter;
+    use std::fs;
+    use uuid::Uuid;
 
     #[test]
     fn web_command_uses_unique_session_proxy_and_network_guards() {
@@ -195,5 +272,20 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--disable-quic"));
         assert!(args.iter().any(|arg| arg == "--lang=en-US"));
         assert_eq!(args.last().map(String::as_str), Some("about:blank"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_orphaned_session_directories() {
+        let root = std::env::temp_dir().join(format!("cim-web-cleanup-{}", Uuid::new_v4()));
+        let orphan = root.join("sessions/orphan");
+        fs::create_dir_all(&orphan).expect("create orphan session fixture");
+        let adapter =
+            WebAdapter::new_with_geo_profile(root.to_string_lossy().into_owned(), shared_profile());
+
+        super::cleanup_orphaned_sessions(&adapter)
+            .await
+            .expect("cleanup orphaned sessions");
+        assert!(!orphan.exists());
+        let _ = fs::remove_dir_all(root);
     }
 }
