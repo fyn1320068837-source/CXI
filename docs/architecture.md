@@ -154,7 +154,7 @@ HOME=~/.cim/instances/code \
 #### B: DesktopAdapter (Claude Desktop)
 
 **两档模式**:
-1. **Desktop Lite（当前）**: 直接执行 Claude.app 二进制，使用独立 HOME/user-data、代理环境、`cimgrp` 和 PF fail-closed
+1. **Desktop Lite（当前）**: 直接执行 Claude.app 二进制，保留宿主 HOME/登录钥匙串并隔离 user-data/XDG/tmp，使用代理环境、`cimgrp` 和 PF fail-closed
    - 网络证据由进程树 lsof 验证，整体安全结论为 `PARTIAL`
    - 时区/语言为 best-effort，CoreLocation 位置保持 unsupported
 

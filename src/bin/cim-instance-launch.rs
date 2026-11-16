@@ -6,7 +6,7 @@
 //! requested program, so it never runs an instance as root.
 
 use anyhow::{bail, Context, Result};
-use nix::unistd::{setgid, setuid, Gid, Uid};
+use nix::unistd::{setgid, setuid, Gid, Uid, User};
 use std::env;
 use std::ffi::CString;
 use std::os::unix::process::CommandExt;
@@ -51,6 +51,7 @@ fn main() -> Result<()> {
 
     let program = &args[command_index];
     let program = allowed_program(program, &user)?;
+    let target_home = resolve_user_home(uid, &user)?;
     let user_cstr = CString::new(user.as_str()).context("invalid user name")?;
     let target_gid = Gid::from_raw(isolation_gid);
     let initgroups_result =
@@ -67,10 +68,30 @@ fn main() -> Result<()> {
     let mut command = Command::new(&program);
     command.args(&args[command_index + 1..]);
 
+    // sudo may discard HOME even with `-E` when env_reset is enabled. Set it
+    // after resolving the account from the system directory so macOS Keychain
+    // and CoreServices see the same login user's home as a Finder launch.
+    command
+        .env("HOME", &target_home)
+        .env("USER", &user)
+        .env("LOGNAME", &user);
+
     // exec replaces this helper; the child therefore inherits the dropped
     // credentials and the environment preserved by sudo -E.
     let error = command.exec();
     Err(error).context("exec isolated instance")
+}
+
+fn resolve_user_home(uid: u32, user: &str) -> Result<std::path::PathBuf> {
+    let account = User::from_uid(Uid::from_raw(uid))?
+        .with_context(|| format!("user account not found for UID {uid}"))?;
+    if account.name != user {
+        bail!("UID {uid} does not belong to requested user {user}");
+    }
+    if !account.dir.is_absolute() || account.dir == Path::new("/") {
+        bail!("refusing unsafe home directory {}", account.dir.display());
+    }
+    Ok(account.dir)
 }
 
 fn parse_args(args: &[String]) -> Result<(u32, u32, String, usize)> {
@@ -213,7 +234,7 @@ fn parse_id(args: &[String], index: usize, name: &str) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_allowed_program, parse_args, ISOLATION_GROUP};
+    use super::{is_allowed_program, parse_args, resolve_user_home, ISOLATION_GROUP};
     use std::path::Path;
 
     #[test]
@@ -279,5 +300,16 @@ mod tests {
             Path::new("/Users/bob/.cim/bin/claude"),
             "alice"
         ));
+    }
+
+    #[test]
+    fn resolves_home_from_uid_and_rejects_mismatched_name() {
+        let uid = nix::unistd::Uid::current().as_raw();
+        let user = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+            .expect("lookup current user")
+            .expect("current user account");
+        let home = resolve_user_home(uid, &user.name).expect("resolve current home");
+        assert_eq!(home, user.dir);
+        assert!(resolve_user_home(uid, "definitely-not-this-user").is_err());
     }
 }

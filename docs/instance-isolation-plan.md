@@ -24,10 +24,10 @@
 Desktop Lite 先解决轻量场景的网络和文件边界：
 
 1. 直接执行 `/Applications/Claude.app/Contents/MacOS/Claude`，不使用 `open -a`。
-2. 使用独立 `HOME`、`user-data`、`config`、`cache`、`data` 和 `tmp` 目录。
+2. 保留宿主 `HOME` 以复用 macOS 登录钥匙串；`user-data`、`config`、`cache`、`data` 和 `tmp` 仍使用独立目录。
 3. 由 root-owned helper 设置 `cimgrp` 后降权启动，并注入 HTTP/SOCKS 代理、TZ/LANG/LC_ALL。
 4. 启动前要求代理和 PF 状态可用；启动失败回滚进程、句柄和目录状态。
-5. 发现范围覆盖所有 Claude.app 主进程和 Electron helper；只有 CIM 独立 profile/HOME/TMPDIR 标记的进程允许存在，手动或旧 profile 进程在 daemon 启动、Desktop 启动、验证和停止阶段清理。
+5. 发现范围覆盖所有 Claude.app 主进程和 Electron helper；只有 CIM 独立 profile/user-data/TMPDIR 标记的进程允许存在，手动或旧 profile 进程在 daemon 启动、Desktop 启动、验证和停止阶段清理。
 6. `/api/security/desktop` 和控制台分别展示网络结论、代理/PF、环境覆盖和位置限制。
 
 Desktop Lite 不宣称覆盖 macOS CoreLocation；位置维度固定为 `unsupported`，时区和语言为

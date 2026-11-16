@@ -4,17 +4,21 @@
 
 当前采用 Desktop Lite：直接启动
 `/Applications/Claude.app/Contents/MacOS/Claude`，不经过 LaunchServices，使用
-独立 `HOME`、`user-data`、缓存和临时目录，并通过 root-owned
+宿主 `HOME`/登录钥匙串以及独立 `user-data`、缓存和临时目录，并通过 root-owned
 `cim-instance-launch` 加入 `cimgrp`。实例连接由 PF fail-closed 保护，进程树用
 `lsof` 做网络验证。
 
 Desktop Lite 的 profile、`user-data`、`config`、`cache`、`data` 和 `tmp` 目录在每次
 启动前都会拒绝符号链接或非目录，并统一修正为 `0700`。启动命令先清空继承环境，随后
-只注入固定 PATH、隔离 HOME/TMP/XDG、代理和 GeoIP 派生的语言/时区，避免 SSH agent、云
-凭据和 API token 进入 Claude Desktop。
+只注入固定 PATH、宿主 HOME/登录钥匙串、隔离 TMP/XDG、代理和 GeoIP 派生的语言/时区，
+避免 SSH agent、云凭据和 API token 进入 Claude Desktop，同时让 Electron/keytar 能找到
+macOS 的 `Claude Key`。
+
+如果 Desktop 的 Local Storage 里保留了与当前出口 GeoIP 不一致的 `spa:locale`，CIM 会在
+停止旧进程后只备份并重建 `Local Storage`；Cookies、IndexedDB 和登录数据不删除。
 
 CIM 对本机所有 Claude.app 主进程和 Electron helper 负责统一生命周期管理。只有带有
-CIM Desktop 独立 `user-data`、`HOME` 或 `TMPDIR` 标记的进程属于受管实例；普通手动启动、
+CIM Desktop 独立 `user-data` 或 `TMPDIR` 标记的进程属于受管实例；普通手动启动、
 旧 profile 或其他目录的 Claude.app 进程会被视为 unmanaged，在 daemon 启动、Desktop 启动、
 网络验证和停止阶段清理。Claude Code CLI 与 CIM Web 的 Chrome 不属于这个进程族，分别由各自适配器管理。
 

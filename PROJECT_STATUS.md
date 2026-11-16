@@ -188,13 +188,13 @@
 
 - **Desktop Lite P0**
    - 已完成直接二进制启动、独立目录、`cimgrp`/PF fail-closed、启动失败回滚和孤儿 helper 清理。
-   - profile、`user-data`、`config`、`cache`、`data`、`tmp` 启动前统一为 `0700` 并拒绝 symlink；Desktop 子进程清空继承环境，只保留固定 PATH、隔离目录、代理和 locale/timezone。
-   - Desktop 现在扫描完整 Claude.app 进程族（主进程与 Electron helper）；只有 CIM 独立 `user-data`、`HOME` 或 `TMPDIR` 标记的进程允许存在，手动启动、旧 profile 和其他目录进程会在 daemon/实例启动、验证和停止阶段被清理。
+   - profile、`user-data`、`config`、`cache`、`data`、`tmp` 启动前统一为 `0700` 并拒绝 symlink；Desktop 子进程清空继承环境，只保留固定 PATH、宿主 HOME/登录钥匙串、隔离目录、代理和 locale/timezone。
+   - Desktop 现在扫描完整 Claude.app 进程族（主进程与 Electron helper）；只有带 CIM 独立 `user-data` 或 `TMPDIR` 标记的进程允许存在，手动启动、旧 profile 和其他目录进程会在 daemon/实例启动、验证和停止阶段被清理。
    - root helper 固定解析 `cimgrp`，校验 `SUDO_UID/SUDO_USER`，并只接受 Claude、Chrome/Chromium、VS Code 和受信 `claude`/`code` 入口；非法程序和非 `cimgrp` GID 会在降权前拒绝。
    - 新增 `/api/security/desktop`，将网络、代理/PF、环境覆盖和 CoreLocation 限制分层展示。
-   - 新 helper 已安装到 `/usr/local/libexec/cim-instance-launch` 并完成终端负向回归；daemon 已重启，代理/GeoIP/PF 当前为健康态。真实 Desktop 回归已执行到启动门禁，但本机未安装 `/Applications/Claude.app`，因此启动项明确阻塞，待安装后重跑 `CIM_RUN_REAL_PROXY=1 CIM_REAL_PROXY_INSTANCES=desktop tests/real_proxy_integration.sh`。
+   - 新 helper 已安装到 `/usr/local/libexec/cim-instance-launch` 并完成终端负向回归；daemon 已重启，代理/GeoIP/PF 当前为健康态。Claude.app 安装后真实 Desktop 回归已通过：`proxied=4`、`direct=0`，独立目录、GeoIP 环境和安全 API 均通过。
    - Tart 2.41.1、`cim-desktop-poc` VM 及约 51GB 本地 macOS 镜像缓存已删除，释放约 48GB；当前方案不依赖 VM。
-   - 真实 Desktop 回归的唯一剩余前置是安装 `/Applications/Claude.app`；安装后按上面的脚本复测。
+   - Desktop 首次启动的 macOS Keychain 兼容性已修复：root helper 依据目标 UID 强制恢复真实用户 HOME/USER/LOGNAME，应用数据目录仍保持独立；旧的 `spa:locale` 会单独备份迁移，不触碰 Cookies/IndexedDB。
 
 - **交付**
    - 运行 `cargo check`、`cargo test --all`、真实代理脚本和 `git diff --check`。

@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const CLAUDE_APP_PATH: &str = "/Applications/Claude.app";
 const CLAUDE_BINARY_PATH: &str = "/Applications/Claude.app/Contents/MacOS/Claude";
@@ -83,6 +84,10 @@ fn configure_desktop_command(
     let cache_dir = format!("{profile_dir}/cache");
     let data_dir = format!("{profile_dir}/data");
     let tmp_dir = format!("{profile_dir}/tmp");
+    // macOS Keychain lookup follows the login user's HOME/search list. Keep
+    // that host value so Claude can use its existing "Claude Key" item while
+    // the application data and caches remain in the CIM profile.
+    let host_home = std::env::var("HOME").unwrap_or_else(|_| profile_dir.to_string());
     let proxy_arg = format!("--proxy-server={HTTP_PROXY_ENDPOINT}");
 
     command
@@ -95,7 +100,7 @@ fn configure_desktop_command(
             "--disable-quic",
         ])
         .env("PATH", DESKTOP_SAFE_PATH)
-        .env("HOME", profile_dir)
+        .env("HOME", host_home)
         .env("TMPDIR", &tmp_dir)
         .env("XDG_CONFIG_HOME", &config_dir)
         .env("XDG_CACHE_HOME", &cache_dir)
@@ -104,6 +109,17 @@ fn configure_desktop_command(
         .env("HTTP_PROXY", HTTP_PROXY_ENDPOINT)
         .env("ALL_PROXY", SOCKS_PROXY_ENDPOINT)
         .env("NO_PROXY", LOOPBACK_NO_PROXY);
+    if let Some(language) = profile.language.as_deref() {
+        command.arg(format!("--lang={language}"));
+        let primary_language = language.split('-').next().unwrap_or(language);
+        command.arg("-AppleLanguages");
+        command.arg(format!("({primary_language})"));
+    }
+    if let Some(locale) = profile.locale.as_deref() {
+        let apple_locale = locale.split('.').next().unwrap_or(locale);
+        command.arg("-AppleLocale");
+        command.arg(apple_locale);
+    }
     apply_locale_env(command, profile);
 }
 
@@ -166,6 +182,104 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Reset only the Chromium local-storage database when Claude's own persisted
+/// SPA locale disagrees with the current GeoIP-derived language. Cookies,
+/// IndexedDB, and the rest of the Desktop profile remain in place. The old
+/// directory is retained as a private backup so a failed migration is
+/// recoverable without asking the user to sign in again.
+fn migrate_persisted_locale(profile_dir: &str, expected_language: Option<&str>) -> Result<()> {
+    let Some(expected) = expected_language else {
+        return Ok(());
+    };
+    let local_storage = Path::new(profile_dir).join("user-data/Local Storage");
+    let metadata = match fs::symlink_metadata(&local_storage) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("inspect Desktop local storage"),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!(
+            "refusing Desktop local storage symlink or non-directory: {}",
+            local_storage.display()
+        );
+    }
+
+    let leveldb = local_storage.join("leveldb");
+    let mut mismatch = false;
+    if let Ok(entries) = fs::read_dir(&leveldb) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            if stored_locale_mismatches(&bytes, expected) {
+                mismatch = true;
+                break;
+            }
+        }
+    }
+    if !mismatch {
+        return Ok(());
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let backup =
+        Path::new(profile_dir).join(format!("user-data/Local Storage.cim-backup-{timestamp}"));
+    fs::rename(&local_storage, &backup).with_context(|| {
+        format!(
+            "failed to back up stale Desktop locale storage {}",
+            local_storage.display()
+        )
+    })?;
+    if let Err(error) = ensure_private_directory(&local_storage) {
+        let _ = fs::rename(&backup, &local_storage);
+        return Err(error);
+    }
+    tracing::info!(
+        expected_language = expected,
+        backup = %backup.display(),
+        "reset stale Claude Desktop persisted locale"
+    );
+    Ok(())
+}
+
+fn stored_locale_mismatches(bytes: &[u8], expected: &str) -> bool {
+    const KEY: &[u8] = b"spa:locale";
+    let expected = expected.to_ascii_lowercase();
+    let mut start = 0;
+    while let Some(relative) = bytes[start..]
+        .windows(KEY.len())
+        .position(|window| window == KEY)
+    {
+        let key_end = start + relative + KEY.len();
+        let tail = &bytes[key_end..bytes.len().min(key_end + 64)];
+        let mut value = String::new();
+        for byte in tail {
+            if byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_' {
+                value.push(*byte as char);
+            } else if !value.is_empty() {
+                break;
+            }
+        }
+        if !value.is_empty() && value.to_ascii_lowercase() != expected {
+            return true;
+        }
+        start = key_end;
+    }
+    false
 }
 
 fn command_has_profile_marker(command: &str, profile_dir: &str) -> bool {
@@ -298,6 +412,8 @@ impl InstanceAdapter for DesktopAdapter {
         if !orphaned.is_empty() {
             terminate_processes(&orphaned).await;
         }
+        let profile = self.geo_profile.read().await.clone();
+        migrate_persisted_locale(&self.profile_dir, profile.language.as_deref())?;
         Ok(())
     }
 
@@ -369,8 +485,8 @@ impl InstanceAdapter for DesktopAdapter {
 #[cfg(test)]
 mod tests {
     use super::{
-        configure_desktop_command, ensure_private_directory, parse_desktop_processes,
-        parse_profile_processes, unmanaged_processes, DESKTOP_SAFE_PATH,
+        configure_desktop_command, ensure_private_directory, migrate_persisted_locale,
+        parse_desktop_processes, parse_profile_processes, unmanaged_processes, DESKTOP_SAFE_PATH,
     };
     use crate::geoip::GeoProfile;
     use std::fs;
@@ -389,6 +505,7 @@ mod tests {
         let profile = GeoProfile {
             timezone: Some("America/New_York".to_string()),
             locale: Some("en_US.UTF-8".to_string()),
+            language: Some("en-US".to_string()),
             ..GeoProfile::default()
         };
         let mut command = Command::new(super::CLAUDE_BINARY_PATH);
@@ -404,9 +521,15 @@ mod tests {
             .iter()
             .any(|arg| arg == "--proxy-server=http://127.0.0.1:7890"));
         assert!(args.iter().any(|arg| arg == "--disable-quic"));
+        assert!(args.iter().any(|arg| arg == "--lang=en-US"));
+        assert!(args.iter().any(|arg| arg == "-AppleLanguages"));
+        assert!(args.iter().any(|arg| arg == "(en)"));
+        assert!(args.iter().any(|arg| arg == "-AppleLocale"));
+        assert!(args.iter().any(|arg| arg == "en_US"));
+        let host_home = std::env::var("HOME").expect("test HOME");
         assert_eq!(
             env_value(&command, "HOME").as_deref(),
-            Some("/tmp/cim-desktop")
+            Some(host_home.as_str())
         );
         assert_eq!(
             env_value(&command, "TMPDIR").as_deref(),
@@ -480,6 +603,38 @@ mod tests {
         assert!(error.to_string().contains("symlink"));
 
         fs::remove_dir_all(&root).expect("remove test profile");
+    }
+
+    #[test]
+    fn stale_desktop_locale_is_backed_up_without_removing_profile_data() {
+        let root =
+            std::env::temp_dir().join(format!("cim-desktop-locale-test-{}", uuid::Uuid::new_v4()));
+        let local_storage = root.join("user-data/Local Storage/leveldb");
+        fs::create_dir_all(&local_storage).expect("create local storage");
+        fs::write(
+            local_storage.join("000003.log"),
+            b"spa:locale\x08\x01zh-Hans",
+        )
+        .expect("write locale record");
+        fs::write(root.join("user-data/Cookies"), b"keep-login-state")
+            .expect("write cookie marker");
+
+        migrate_persisted_locale(root.to_str().unwrap(), Some("en-US"))
+            .expect("migrate stale locale");
+        assert!(root.join("user-data/Local Storage").is_dir());
+        assert!(root.join("user-data/Cookies").is_file());
+        let backup_count = fs::read_dir(root.join("user-data"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("Local Storage.cim-backup-")
+            })
+            .count();
+        assert_eq!(backup_count, 1);
+        fs::remove_dir_all(root).expect("remove test profile");
     }
 
     #[test]
