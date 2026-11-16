@@ -81,8 +81,24 @@ youzhisan ALL=(root) SETENV: NOPASSWD: /usr/local/libexec/cim-instance-launch *
 写入后用 `sudo visudo -cf /etc/sudoers` 校验，并用
 `sudo -n pfctl -a com.cim -s rules` 确认无交互认证即可执行。
 `install.sh` 会把 root-owned 的 `cim-instance-launch` 安装到
-`/usr/local/libexec`；该 helper 只在 exec 前设置目标用户的 UID/GID 和
-supplementary groups，实例进程本身不会以 root 身份运行。
+`/usr/local/libexec`。sudoers 这一行保留参数通配符，是因为 UID、GID 和用户
+名在机器上是动态值；安全边界由 helper 本身继续收紧：
+
+- 只接受 sudo 注入的 `SUDO_UID/SUDO_USER`，禁止借助参数伪装成其他用户；
+- 忽略环境变量中的组名，固定解析 `/Groups/cimgrp`，并拒绝任何非 `cimgrp` 的
+  GID；
+- 只允许 CIM 管理的入口程序：`Claude.app`、Chromium/Chrome、VS Code 的
+  `code` 启动器，以及 `/usr/local/bin`、`/opt/homebrew/bin` 和当前用户
+  `~/.local/bin`/`~/.cim/bin` 下的 `claude`/`code`；shell、`id` 等任意程序
+  会在降权前拒绝；
+- 通过 `initgroups` 设置 supplementary groups，再降权到请求用户后 exec，
+  实例进程本身不会以 root 身份运行。
+
+修改 helper 或 sudoers 后可执行负向回归（不需要启动 Claude）：
+
+```bash
+tests/test_instance_launcher.sh
+```
 
 ## 验证安装
 

@@ -19,16 +19,26 @@ fi
 
 user="$(id -un)"
 uid="$(id -u)"
-group="${CIM_ISOLATION_GROUP:-cimgrp}"
+group="cimgrp"
 gid="$(dscl . -read "/Groups/${group}" PrimaryGroupID | awk '/PrimaryGroupID:/ {print $2}')"
 [[ "$gid" =~ ^[0-9]+$ ]]
 
-identity="$(sudo -n -E "$helper" \
+if sudo -n -E "$helper" \
   --uid "$uid" \
   --gid "$gid" \
   --user "$user" \
-  -- /usr/bin/id -a)"
+  -- /usr/bin/id -a >/dev/null 2>&1; then
+  echo "FAIL: arbitrary /usr/bin/id was accepted by the launcher allowlist" >&2
+  exit 1
+fi
 
-grep -Fq "uid=${uid}(${user})" <<<"$identity"
-grep -Fq "egid=${gid}(${group})" <<<"$identity"
-echo "PASS: instance helper drops to uid=${uid} and egid=${gid}(${group})"
+if sudo -n -E "$helper" \
+  --uid "$uid" \
+  --gid "$((gid + 1))" \
+  --user "$user" \
+  -- /Applications/Claude.app/Contents/MacOS/Claude >/dev/null 2>&1; then
+  echo "FAIL: non-cimgrp GID was accepted by the launcher" >&2
+  exit 1
+fi
+
+echo "PASS: launcher rejects arbitrary programs and non-cimgrp GIDs (cimgrp=${gid})"

@@ -8,6 +8,16 @@
 `cim-instance-launch` 加入 `cimgrp`。实例连接由 PF fail-closed 保护，进程树用
 `lsof` 做网络验证。
 
+Desktop Lite 的 profile、`user-data`、`config`、`cache`、`data` 和 `tmp` 目录在每次
+启动前都会拒绝符号链接或非目录，并统一修正为 `0700`。启动命令先清空继承环境，随后
+只注入固定 PATH、隔离 HOME/TMP/XDG、代理和 GeoIP 派生的语言/时区，避免 SSH agent、云
+凭据和 API token 进入 Claude Desktop。
+
+CIM 对本机所有 Claude.app 主进程和 Electron helper 负责统一生命周期管理。只有带有
+CIM Desktop 独立 `user-data`、`HOME` 或 `TMPDIR` 标记的进程属于受管实例；普通手动启动、
+旧 profile 或其他目录的 Claude.app 进程会被视为 unmanaged，在 daemon 启动、Desktop 启动、
+网络验证和停止阶段清理。Claude Code CLI 与 CIM Web 的 Chrome 不属于这个进程族，分别由各自适配器管理。
+
 Desktop Lite 的结论是分层的：网络证据可以得到 `PASS`、`FAIL` 或代理故障期间的
 `BLOCKED`；整体安全结论在网络通过时显示 `PARTIAL`，因为 macOS CoreLocation
 位置仍不支持可靠覆盖，时区和语言属于 best-effort。控制台和

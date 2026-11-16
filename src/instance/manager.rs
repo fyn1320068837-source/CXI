@@ -75,7 +75,8 @@ impl InstanceManager {
     }
 
     pub async fn cleanup_orphaned_sessions(&self) -> Result<()> {
-        self.web.cleanup_orphaned_sessions().await
+        self.web.cleanup_orphaned_sessions().await?;
+        self.desktop.cleanup_orphaned_processes().await
     }
 
     fn adapter_for(&self, kind: InstanceKind) -> Arc<dyn InstanceAdapter> {

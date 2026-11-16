@@ -13,11 +13,18 @@ use super::{
 use crate::geoip::SharedGeoProfile;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const CLAUDE_APP_PATH: &str = "/Applications/Claude.app";
 const CLAUDE_BINARY_PATH: &str = "/Applications/Claude.app/Contents/MacOS/Claude";
+const CLAUDE_APP_MARKER: &str = "/Applications/Claude.app/Contents/";
+// Keep the Desktop child environment deterministic. In particular, do not
+// pass through SSH agents, cloud credentials, API keys, or a user-controlled
+// PATH to an app that can load extensions and helper processes.
+const DESKTOP_SAFE_PATH: &str =
+    "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/opt/homebrew/sbin";
 
 pub struct DesktopAdapter {
     app_path: String,
@@ -46,6 +53,21 @@ impl DesktopAdapter {
         }
     }
 
+    /// Remove every Claude.app process family before the daemon publishes a
+    /// new managed Desktop instance. CIM intentionally owns all Claude.app
+    /// windows on this host; Claude Code CLI and Claude Web are separate
+    /// process families and are not matched by this marker.
+    pub async fn cleanup_orphaned_processes(&self) -> Result<()> {
+        let marker = self.profile_dir.clone();
+        let orphaned = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
+            .await
+            .unwrap_or_default();
+        if !orphaned.is_empty() {
+            terminate_processes(&orphaned).await;
+        }
+        Ok(())
+    }
+
     fn executable(&self) -> Option<String> {
         resolve_executable(&[CLAUDE_BINARY_PATH])
     }
@@ -64,11 +86,15 @@ fn configure_desktop_command(
     let proxy_arg = format!("--proxy-server={HTTP_PROXY_ENDPOINT}");
 
     command
+        // `isolated_command` may use `sudo -E`; clear the daemon's entire
+        // inherited environment before adding the small instance allowlist.
+        .env_clear()
         .args([
             &format!("--user-data-dir={user_data_dir}"),
             &proxy_arg,
             "--disable-quic",
         ])
+        .env("PATH", DESKTOP_SAFE_PATH)
         .env("HOME", profile_dir)
         .env("TMPDIR", &tmp_dir)
         .env("XDG_CONFIG_HOME", &config_dir)
@@ -81,25 +107,116 @@ fn configure_desktop_command(
     apply_locale_env(command, profile);
 }
 
-fn parse_desktop_processes(output: &str, profile_dir: &str) -> Vec<u32> {
-    let binary_marker = CLAUDE_BINARY_PATH;
+/// Create one profile directory without following a pre-existing symlink and
+/// make it private to the current user. The final path is checked with
+/// `symlink_metadata` so dangling symlinks are rejected as well.
+fn ensure_private_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "refusing Desktop Lite profile symlink at {}",
+                    path.display()
+                );
+            }
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "Desktop Lite profile path is not a directory: {}",
+                    path.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(path).with_context(|| {
+                format!("failed to create Desktop Lite directory {}", path.display())
+            })?;
+            // Re-check after creation. This also makes the invariant explicit
+            // if a concurrent process replaced the path while it was created.
+            let metadata = fs::symlink_metadata(path).with_context(|| {
+                format!(
+                    "failed to inspect Desktop Lite directory {}",
+                    path.display()
+                )
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                anyhow::bail!(
+                    "Desktop Lite profile path changed while creating: {}",
+                    path.display()
+                );
+            }
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect Desktop Lite directory {}",
+                    path.display()
+                )
+            });
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).with_context(|| {
+            format!(
+                "failed to set Desktop Lite directory permissions {}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn command_has_profile_marker(command: &str, profile_dir: &str) -> bool {
     let user_data_marker = format!("--user-data-dir={profile_dir}/user-data");
     let home_marker = format!("HOME={profile_dir}");
+    let tmp_marker = format!("TMPDIR={profile_dir}/tmp");
+    command.split_whitespace().any(|argument| {
+        argument == user_data_marker || argument == home_marker || argument == tmp_marker
+    })
+}
+
+/// Discover the complete Claude.app process family. Electron helpers carry
+/// paths under the app bundle even after they detach from the main process.
+/// Ownership is classified separately by the exact CIM profile markers.
+fn command_is_claude_executable(command: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .map(|executable| executable.starts_with(CLAUDE_APP_MARKER))
+        .unwrap_or(false)
+}
+
+fn parse_desktop_processes(output: &str, profile_dir: &str) -> Vec<u32> {
     output
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let pid = fields.next()?;
             let command = fields.collect::<Vec<_>>().join(" ");
-            let marker = command.contains(binary_marker)
-                || command.contains(&user_data_marker)
-                || command.contains(&home_marker);
+            let marker = command_is_claude_executable(&command)
+                || command_has_profile_marker(&command, profile_dir);
             marker.then(|| pid.parse::<u32>().ok()).flatten()
         })
         .collect()
 }
 
-fn processes_with_profile(profile_dir: &str) -> Vec<u32> {
+fn parse_profile_processes(output: &str, profile_dir: &str) -> Vec<u32> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            let command = fields.collect::<Vec<_>>().join(" ");
+            command_has_profile_marker(&command, profile_dir)
+                .then(|| pid.parse::<u32>().ok())
+                .flatten()
+        })
+        .collect()
+}
+
+fn processes_with_claude_app(profile_dir: &str) -> Vec<u32> {
     let Ok(output) = Command::new("ps")
         .args(["-eww", "-axo", "pid=,command="])
         .output()
@@ -109,24 +226,38 @@ fn processes_with_profile(profile_dir: &str) -> Vec<u32> {
     parse_desktop_processes(&String::from_utf8_lossy(&output.stdout), profile_dir)
 }
 
-fn process_is_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+fn processes_with_profile(profile_dir: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps")
+        .args(["-eww", "-axo", "pid=,command="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_profile_processes(&String::from_utf8_lossy(&output.stdout), profile_dir)
+}
+
+fn unmanaged_processes(all: &[u32], owned: &[u32]) -> Vec<u32> {
+    all.iter()
+        .copied()
+        .filter(|pid| !owned.contains(pid))
+        .collect()
 }
 
 async fn terminate_desktop_processes(root_pid: u32, profile_dir: &str) {
     let marker = profile_dir.to_owned();
-    let marker_pids = tokio::task::spawn_blocking(move || processes_with_profile(&marker))
+    let claude_pids = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
         .await
         .unwrap_or_default();
     terminate_process_tree(root_pid).await;
-    if !marker_pids.is_empty() {
-        terminate_processes(&marker_pids).await;
+    if !claude_pids.is_empty() {
+        terminate_processes(&claude_pids).await;
+    }
+    let marker = profile_dir.to_owned();
+    let remaining_pids = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
+        .await
+        .unwrap_or_default();
+    if !remaining_pids.is_empty() {
+        terminate_processes(&remaining_pids).await;
     }
 }
 
@@ -148,15 +279,24 @@ impl InstanceAdapter for DesktopAdapter {
 
     async fn prepare(&self) -> Result<()> {
         for directory in [
-            self.profile_dir.as_str(),
-            &format!("{}/user-data", self.profile_dir),
-            &format!("{}/config", self.profile_dir),
-            &format!("{}/cache", self.profile_dir),
-            &format!("{}/data", self.profile_dir),
-            &format!("{}/tmp", self.profile_dir),
+            PathBuf::from(&self.profile_dir),
+            PathBuf::from(format!("{}/user-data", self.profile_dir)),
+            PathBuf::from(format!("{}/config", self.profile_dir)),
+            PathBuf::from(format!("{}/cache", self.profile_dir)),
+            PathBuf::from(format!("{}/data", self.profile_dir)),
+            PathBuf::from(format!("{}/tmp", self.profile_dir)),
         ] {
-            std::fs::create_dir_all(directory)
-                .with_context(|| format!("failed to create Desktop Lite directory {directory}"))?;
+            ensure_private_directory(&directory)?;
+        }
+        // CIM owns the complete Claude.app process family on this host. A
+        // daemon restart or a manually launched copy must not remain outside
+        // the proxy/PF lifecycle before a new controlled launch.
+        let marker = self.profile_dir.clone();
+        let orphaned = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
+            .await
+            .unwrap_or_default();
+        if !orphaned.is_empty() {
+            terminate_processes(&orphaned).await;
         }
         Ok(())
     }
@@ -184,7 +324,7 @@ impl InstanceAdapter for DesktopAdapter {
             tokio::task::spawn_blocking(move || !processes_with_profile(&marker).is_empty())
                 .await
                 .unwrap_or(false);
-        if !has_marked_process && !process_is_alive(root_pid) {
+        if !has_marked_process {
             terminate_process_tree(root_pid).await;
             anyhow::bail!("Claude Desktop Lite exited during startup; launch rolled back");
         }
@@ -199,9 +339,25 @@ impl InstanceAdapter for DesktopAdapter {
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
         let profile_dir = self.profile_dir.clone();
-        let marker_pids = tokio::task::spawn_blocking(move || processes_with_profile(&profile_dir))
-            .await
-            .unwrap_or_default();
+        let scan_dir = profile_dir.clone();
+        let (all_pids, marker_pids) = tokio::task::spawn_blocking(move || {
+            (
+                processes_with_claude_app(&scan_dir),
+                processes_with_profile(&profile_dir),
+            )
+        })
+        .await
+        .unwrap_or_default();
+
+        // The daemon owns the complete Claude.app family. A process without
+        // the CIM profile markers is an unmanaged manual/legacy launch; stop
+        // it before it can be included in the Desktop security conclusion.
+        let unmanaged = unmanaged_processes(&all_pids, &marker_pids);
+        if !unmanaged.is_empty() {
+            tracing::warn!(pids = ?unmanaged, "Stopping unmanaged Claude.app processes");
+            terminate_processes(&unmanaged).await;
+        }
+
         let mut pids = descendant_pids(handle.root_pid);
         pids.extend(marker_pids);
         pids.sort_unstable();
@@ -212,8 +368,13 @@ impl InstanceAdapter for DesktopAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::{configure_desktop_command, parse_desktop_processes};
+    use super::{
+        configure_desktop_command, ensure_private_directory, parse_desktop_processes,
+        parse_profile_processes, unmanaged_processes, DESKTOP_SAFE_PATH,
+    };
     use crate::geoip::GeoProfile;
+    use std::fs;
+    use std::path::Path;
     use std::process::Command;
 
     fn env_value(command: &Command, key: &str) -> Option<String> {
@@ -266,11 +427,72 @@ mod tests {
     }
 
     #[test]
+    fn desktop_command_drops_sensitive_inherited_environment() {
+        let profile = GeoProfile::default();
+        let mut command = Command::new(super::CLAUDE_BINARY_PATH);
+        command
+            .env("AWS_ACCESS_KEY_ID", "should-not-reach-desktop")
+            .env("SSH_AUTH_SOCK", "/private/tmp/agent.sock")
+            .env("GITHUB_TOKEN", "should-not-reach-desktop")
+            .env("PATH", "/tmp/user-controlled");
+
+        configure_desktop_command(&mut command, "/tmp/cim-desktop", &profile);
+
+        assert_eq!(
+            env_value(&command, "PATH").as_deref(),
+            Some(DESKTOP_SAFE_PATH)
+        );
+        assert!(env_value(&command, "AWS_ACCESS_KEY_ID").is_none());
+        assert!(env_value(&command, "SSH_AUTH_SOCK").is_none());
+        assert!(env_value(&command, "GITHUB_TOKEN").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_profile_directories_are_private_and_reject_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root =
+            std::env::temp_dir().join(format!("cim-desktop-profile-test-{}", uuid::Uuid::new_v4()));
+        let profile = root.join("profile");
+        let child = profile.join("user-data");
+        fs::create_dir_all(&child).expect("create test profile");
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o755))
+            .expect("make profile deliberately broad");
+        fs::set_permissions(&child, fs::Permissions::from_mode(0o755))
+            .expect("make child deliberately broad");
+
+        ensure_private_directory(Path::new(&profile)).expect("harden profile");
+        ensure_private_directory(Path::new(&child)).expect("harden child");
+        assert_eq!(
+            fs::metadata(&profile).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&child).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let symlink_path = root.join("symlink-profile");
+        symlink(&profile, &symlink_path).expect("create test symlink");
+        let error = ensure_private_directory(Path::new(&symlink_path))
+            .expect_err("profile symlink must be rejected");
+        assert!(error.to_string().contains("symlink"));
+
+        fs::remove_dir_all(&root).expect("remove test profile");
+    }
+
+    #[test]
     fn desktop_marker_matches_only_its_profile() {
         let profile = "/tmp/cim-desktop";
         let ps = format!(
-            " 101 /Applications/Claude.app/Contents/MacOS/Claude --user-data-dir={profile}/user-data\n 102 helper --user-data-dir={profile}-other/user-data\n 103 helper HOME={profile}\n"
+            " 101 /Applications/Claude.app/Contents/MacOS/Claude --user-data-dir={profile}/user-data\n 102 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=renderer\n 103 helper --user-data-dir={profile}-other/user-data\n 104 helper HOME={profile}\n 105 helper HOME={profile}-other\n 106 /bin/sh -c echo /Applications/Claude.app/Contents/MacOS/Claude\n"
         );
-        assert_eq!(parse_desktop_processes(&ps, profile), vec![101, 103]);
+        assert_eq!(parse_desktop_processes(&ps, profile), vec![101, 102, 104]);
+        assert_eq!(parse_profile_processes(&ps, profile), vec![101, 104]);
+        assert_eq!(
+            unmanaged_processes(&[101, 102, 104], &[101, 104]),
+            vec![102]
+        );
     }
 }
