@@ -5,7 +5,7 @@ use super::{
     HTTP_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Command;
 
@@ -68,10 +68,24 @@ fn parse_processes_with_user_data(output: &str, user_data_dir: &str) -> Vec<u32>
 }
 
 fn processes_with_user_data(user_data_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
-        return Vec::new();
-    };
-    parse_processes_with_user_data(&String::from_utf8_lossy(&output.stdout), user_data_dir)
+    processes_with_user_data_checked(user_data_dir).unwrap_or_default()
+}
+
+fn processes_with_user_data_checked(user_data_dir: &str) -> Result<Vec<u32>> {
+    let output = Command::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .context("failed to run ps while scanning VS Code processes")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ps failed while scanning VS Code processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_processes_with_user_data(
+        &String::from_utf8_lossy(&output.stdout),
+        user_data_dir,
+    ))
 }
 
 async fn terminate_vscode_processes(root_pid: u32, user_data_dir: &str) {
@@ -167,6 +181,19 @@ impl InstanceAdapter for VsCodeAdapter {
         pids.sort_unstable();
         pids.dedup();
         pids
+    }
+
+    async fn process_tree_checked(&self, handle: &ProcessHandle) -> Result<Vec<u32>> {
+        let user_data_dir = self.user_data_dir.clone();
+        let marker_pids =
+            tokio::task::spawn_blocking(move || processes_with_user_data_checked(&user_data_dir))
+                .await
+                .context("VS Code process scan task failed")??;
+        let mut pids = super::descendant_pids_checked(handle.root_pid)?;
+        pids.extend(marker_pids);
+        pids.sort_unstable();
+        pids.dedup();
+        Ok(pids)
     }
 }
 

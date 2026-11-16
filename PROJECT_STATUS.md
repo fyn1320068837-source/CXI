@@ -3,7 +3,7 @@
 **项目**: Claude Instance Manager (CIM)  
 **版本**: v1.0.0-dev  
 **日期**: 2026-11-14
-**当前阶段**: P0/P1 结构整理与实例运行时验收完成，Desktop Lite P0 已实现，进入真实 Claude.app 回归
+**当前阶段**: P0 daemon/PF/进程扫描加固与 Desktop Lite 真实回归完成，进入交付整理
 
 ---
 
@@ -16,12 +16,12 @@
 ✅ M2 网关    [████████] 100%  (2天) - 真实 SOCKS5 已联调
 ✅ M3 实例    [████████] 100%  (3天) - Code/Web 已验证
 ✅ M4 验证    [████████] 100%  (3天) - Web 专属进程级与包级 DNS 已完成
-🟡 M5 B实例   [██████  ]  75%  (2天) - Desktop Lite P0 已实现，等待真实 Claude.app 回归
-🟡 M6 测试    [███████ ]  90%  (3天) - 真实代理、WebRTC、DNS、断开恢复、Code 回归已实测
-🟡 M7 交付    [███████ ]  80%  (2天) - Desktop Lite P0 已完成，等待真实 Claude.app 与 VS Code 环境回归
+✅ M5 B实例   [████████] 100%  (2天) - Desktop Lite P0 与 Claude.app 真实回归完成
+🟡 M6 测试    [████████]  95%  (3天) - 真实代理、WebRTC、DNS、断开恢复、Code、Desktop 回归已实测
+🟡 M7 交付    [███████ ]  90%  (2天) - P0 交付检查完成，VS Code 真实环境回归仍待安装客户端
 
-总进度: 17/21 天 (81%)
-下一阶段: 完成 Desktop Lite 真实回归；Tart/Apple VM 降为可选 P2
+总进度: 19/21 天 (90%)
+下一阶段: 完成 VS Code 客户端环境回归和交付清理；Tart/Apple VM 保持可选 P2
 ```
 
 ---
@@ -94,6 +94,7 @@
 - 钥匙串授权已简化：守护进程现在优先读取权限为 0600 的现有 sing-box 配置，只有首次迁移或配置缺密码时才调用 `security`；普通 launchd 重启和 release 更新不再重复触发 `com.cim.proxy` 弹窗。
 - App 管理授权已改为固定签名流程：安装和重启脚本复用本机签名身份，并用固定 `com.cim.daemon` identifier 签名，避免 ad-hoc cdhash 随每次编译变化。首次切换到新签名需在 macOS 设置中确认一次。
 - P0/P1 优化已完成：代理隧道健康与 GeoIP readiness 分离，GeoIP 未就绪时 Web 启动被阻止；CDP 目标监控支持断线退避重连；请求日志增加结果/失败原因、30 分钟 TTL、数量上限和高熵路径脱敏；Code/VS Code/Web 分别按 HOME、user-data/extensions 和 session marker 发现进程，停止与 daemon 重启会清理孤儿 helper 和残留目录。Web 额外使用 `~/.cim/instances/web/profile` 的 0700 持久化独立 profile 保留登录和 Cloudflare clearance Cookie，`sessions/<uuid>` 仅作临时进程 marker，停止时不删除 profile。
+- 2026-11-15 P0 fail-closed 加固已完成：daemon 启动保持 PF blocked 直到孤儿进程清理完成，关停时停止健康检查、锁定 blocked、停止所有实例后才停止 sing-box；Code、Desktop、VS Code、Web 的 `ps/pgrep` 失败均进入验证失败；PF 切换后读取 live anchor rules，确认代理端口与 `cimgrp` 全阻断规则真实生效。
 - Cage 风格轻量检查已接入：`/api/security/web.check_matrix` 分离出口/GeoIP、PF fail-closed、进程连接、浏览器策略、独立目录、证据时效、DNS、WebRTC 和 IPv6；`not_sampled`、`pending`、`expired` 不再被当作 PASS。
 - PF 健康态已改为“只允许 `127.0.0.1/::1:7890/7891`，其余出站阻断”，故障态阻断全部 IP 协议，避免清空 anchor 后出现 daemon 重启直连窗口。更新代码后需要重新执行 `cim install-firewall` 落盘 `.allow` 规则。
 
@@ -162,10 +163,9 @@
 [docs/instance-isolation-plan.md](docs/instance-isolation-plan.md)。当前优先级是：
 
 1. 在安装 VS Code 的主机执行 `CIM_REAL_PROXY_INSTANCES=vscode` 真实回归。
-2. 在安装 Claude.app 的主机完成 Desktop Lite 正常、断代理阻断、恢复放行和递归 lsof 回归；Tart 镜像已删除，VM 仅作为可选 P2。
-3. 继续维护 PF、GeoIP 和实例进程回归证据。
-4. 重装新版 PF 规则后，复测健康态代理访问、代理断开阻断、恢复放行以及 daemon 强制重启窗口。
-5. 将一次性 DNS/tcpdump、WebRTC CDP 和 IPv6-only 主动探测结果接入 `check_matrix`，未采样继续保持 UNKNOWN。
+2. 继续维护 PF、GeoIP 和实例进程回归证据。
+3. 将一次性 DNS/tcpdump、WebRTC CDP 和 IPv6-only 主动探测结果接入 `check_matrix`，未采样继续保持 UNKNOWN。
+4. 完成交付清理和发布检查；Tart 镜像已删除，VM 仅作为可选 P2。
 
 已完成的基础项：
 
@@ -175,7 +175,7 @@
    - 实测杀掉 daemon 管理的 sing-box 后，`/api/status` 在约 2 秒内变为
      `proxy.healthy=false`、`firewall.mode=blocked`；带 `cimgrp` 的真实公网直连超时。
    - 调用 `/api/proxy/restart` 后，出口 IP/GeoIP 恢复，`firewall.mode=allowed`，同一组直连恢复。
-   - 已安装 `/etc/sudoers.d/cim_pf` 的精确授权；新版还需要补充 `.allow` 规则加载、PF state 清理和对应语法检查授权，完成后再由 `gui/501/com.cim.daemon` 做阻断/恢复演练。
+   - 已安装 `/etc/sudoers.d/cim_pf` 的精确授权；`.allow` 规则加载、PF state 清理、live rules 校验和对应语法检查授权均已完成，并由 `gui/501/com.cim.daemon` 做过阻断/恢复演练。
 
 - **实例级 PF 启动器** ✅ 2026-11-11
    - 安装 root-owned `/usr/local/libexec/cim-instance-launch`，启动前设置用户 supplementary
@@ -293,10 +293,10 @@ pkill -f "cim daemon"
 **开发进度**: P0/P1 结构整理、Web/Code 真实代理联调已完成
 **代码质量**: `cargo check` 无警告
 **文档完备**: 联调、PF 和 Desktop 限制已记录
-**测试覆盖**: 34 个 Rust 单测 + 可选 Code/VS Code/Web/Desktop 真实代理集成脚本
+**测试覆盖**: 46 个 CIM Rust 单测、4 个 root helper 单测 + Code/VS Code/Web/Desktop 真实代理集成脚本
 
 ---
 
-**报告生成**: 2026-11-14
-**下次更新**: VS Code 安装后或 Desktop Lite 真实回归完成后
-**状态**: 🟡 代理链路和 P1 运行时通过，等待 VS Code 条件与 Desktop Lite 实测
+**报告生成**: 2026-11-16
+**下次更新**: VS Code 安装后完成真实回归，或交付检查项发生变化时
+**状态**: 🟡 P0 fail-closed 与 Desktop Lite 已验收，等待 VS Code 条件和最终交付清理

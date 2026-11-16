@@ -89,6 +89,22 @@ async fn run_daemon() -> Result<()> {
         firewall,
     ));
 
+    // Keep the PF anchor fail-closed while the daemon removes unmanaged
+    // Claude/Web sessions. Do not expose an allowed PF state until cleanup
+    // and the first proxy/GeoIP check have both completed.
+    proxy_manager.mark_unhealthy();
+
+    // Build the manager before starting the proxy. Router construction also
+    // removes orphaned instance processes, so that cleanup happens while PF
+    // is still blocked after a daemon restart.
+    let (router, instance_manager) = api::create_router(
+        storage,
+        geo_profile,
+        proxy_manager.clone(),
+        config.verification.allow_lan,
+    )
+    .await?;
+
     // Start sing-box
     if let Err(e) = proxy_manager.start().await {
         warn!("Failed to start proxy manager: {}", e);
@@ -119,18 +135,9 @@ async fn run_daemon() -> Result<()> {
     // Keep the health loop alive even when the first start failed. A later
     // API restart can then recover the proxy and immediately resume checks.
     let health_proxy_manager = proxy_manager.clone();
-    tokio::spawn(async move {
+    let health_task = tokio::spawn(async move {
         health_proxy_manager.health_check_loop().await;
     });
-
-    // Create API router with storage
-    let router = api::create_router(
-        storage,
-        geo_profile,
-        proxy_manager.clone(),
-        config.verification.allow_lan,
-    )
-    .await;
 
     // Start HTTP server
     let listener = tokio::net::TcpListener::bind(&config.daemon.listen_addr).await?;
@@ -140,7 +147,16 @@ async fn run_daemon() -> Result<()> {
     tokio::select! {
         result = server => result?,
         _ = shutdown_signal() => {
-            info!("Shutdown signal received, stopping proxy and instances");
+            info!("Shutdown signal received, stopping instances before proxy");
+            // Stop the periodic health task before changing the firewall. It
+            // can otherwise race shutdown and briefly restore the allowed
+            // rules after the proxy has already started going away.
+            health_task.abort();
+            let _ = health_task.await;
+            proxy_manager.mark_unhealthy();
+            if let Err(error) = instance_manager.write().await.stop_all().await {
+                warn!(error = %error, "Some instances failed to stop during daemon shutdown");
+            }
             proxy_manager.stop().await?;
         }
     }

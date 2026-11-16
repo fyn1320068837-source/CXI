@@ -15,6 +15,10 @@
 3. ✅ 将 `web.rs` 拆为生命周期和 CDP/请求监控模块。
 4. ✅ 把同步 SQLite 操作统一放入 `spawn_blocking`，避免阻塞 Axum/Tokio worker。
 5. ✅ 补齐 `cim status`、`cim stop-all` 和 launchd daemon 重启 smoke test。
+6. ✅ 修复 daemon 重启顺序：启动时先保持 PF blocked 并清理孤儿实例，关停时先停止健康检查和实例，再停止代理。
+7. ✅ 进程扫描 fail-closed：`ps`、`pgrep` 或进程树查询失败会使验证失败，不再当作空进程树；Code、Desktop、VS Code、Web 均使用 checked scan。
+8. ✅ PF 状态切换后读取 anchor 的 live rules，校验代理端口、IPv4/IPv6 loopback 和 `cimgrp` 全阻断规则，规则不匹配时保持不可用状态。
+9. ✅ 增加真实回归：launchd + Desktop 重启、PF live rules、真实 Desktop 代理/GeoIP/语言/时区/lsof 和代理故障注入。
 
 每个小步都运行 `cargo fmt --check`、`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`，再跑真实代理 Web 回归。
 
@@ -27,10 +31,10 @@
 
 ## P1：Desktop Lite 真实回归
 
-1. 在安装 Claude.app 的主机执行 Desktop 正常启动和独立目录检查。
-2. 停止上游代理，确认 `/api/security/desktop` 进入 `BLOCKED`，Desktop 外部连接超时。
-3. 恢复代理，确认 PF 自动回到 `allowed`，Desktop 可以重新访问并回到网络 `PASS`。
-4. 检查递归 `lsof`、孤儿 helper 清理、启动失败回滚和 `/api/status`/安全结论一致。
+1. ✅ 在安装 Claude.app 的主机执行 Desktop 正常启动和独立目录检查。
+2. ✅ 停止上游代理，确认 `/api/security/desktop` 进入 `BLOCKED`，Desktop 外部连接超时。
+3. ✅ 恢复代理，确认 PF 自动回到 `allowed`，Desktop 可以重新访问并回到网络 `PASS`。
+4. ✅ 检查递归 `lsof`、孤儿 helper 清理、启动失败回滚和 `/api/status`/安全结论一致。
 
 ## P2：Desktop VM 强隔离（可选）
 

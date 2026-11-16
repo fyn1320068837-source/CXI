@@ -6,7 +6,7 @@
 // It is a network-hardened best-effort backend; CoreLocation remains outside
 // the guarantees of this adapter and is reported by the API layer as partial.
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, resolve_executable,
+    apply_locale_env, descendant_pids_checked, isolated_command, resolve_executable,
     terminate_process_tree, terminate_processes, CapabilityReport, InstanceAdapter, ProcessHandle,
     HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
 };
@@ -62,7 +62,7 @@ impl DesktopAdapter {
         let marker = self.profile_dir.clone();
         let orphaned = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
             .await
-            .unwrap_or_default();
+            .context("Desktop orphan scan task failed")??;
         if !orphaned.is_empty() {
             terminate_processes(&orphaned).await;
         }
@@ -330,24 +330,48 @@ fn parse_profile_processes(output: &str, profile_dir: &str) -> Vec<u32> {
         .collect()
 }
 
-fn processes_with_claude_app(profile_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps")
+fn processes_with_claude_app(profile_dir: &str) -> Result<Vec<u32>> {
+    let output = Command::new("ps")
         .args(["-eww", "-axo", "pid=,command="])
         .output()
-    else {
-        return Vec::new();
-    };
-    parse_desktop_processes(&String::from_utf8_lossy(&output.stdout), profile_dir)
+        .context("failed to run ps for Claude process scan")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "ps failed for Claude process scan: {}",
+            if stderr.is_empty() {
+                format!("exit status {}", output.status)
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(parse_desktop_processes(
+        &String::from_utf8_lossy(&output.stdout),
+        profile_dir,
+    ))
 }
 
-fn processes_with_profile(profile_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps")
+fn processes_with_profile(profile_dir: &str) -> Result<Vec<u32>> {
+    let output = Command::new("ps")
         .args(["-eww", "-axo", "pid=,command="])
         .output()
-    else {
-        return Vec::new();
-    };
-    parse_profile_processes(&String::from_utf8_lossy(&output.stdout), profile_dir)
+        .context("failed to run ps for Desktop profile scan")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "ps failed for Desktop profile scan: {}",
+            if stderr.is_empty() {
+                format!("exit status {}", output.status)
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(parse_profile_processes(
+        &String::from_utf8_lossy(&output.stdout),
+        profile_dir,
+    ))
 }
 
 fn unmanaged_processes(all: &[u32], owned: &[u32]) -> Vec<u32> {
@@ -361,6 +385,8 @@ async fn terminate_desktop_processes(root_pid: u32, profile_dir: &str) {
     let marker = profile_dir.to_owned();
     let claude_pids = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
         .await
+        .ok()
+        .and_then(Result::ok)
         .unwrap_or_default();
     terminate_process_tree(root_pid).await;
     if !claude_pids.is_empty() {
@@ -369,6 +395,8 @@ async fn terminate_desktop_processes(root_pid: u32, profile_dir: &str) {
     let marker = profile_dir.to_owned();
     let remaining_pids = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
         .await
+        .ok()
+        .and_then(Result::ok)
         .unwrap_or_default();
     if !remaining_pids.is_empty() {
         terminate_processes(&remaining_pids).await;
@@ -408,7 +436,7 @@ impl InstanceAdapter for DesktopAdapter {
         let marker = self.profile_dir.clone();
         let orphaned = tokio::task::spawn_blocking(move || processes_with_claude_app(&marker))
             .await
-            .unwrap_or_default();
+            .context("Desktop orphan scan task failed")??;
         if !orphaned.is_empty() {
             terminate_processes(&orphaned).await;
         }
@@ -436,10 +464,11 @@ impl InstanceAdapter for DesktopAdapter {
         // the manager cannot publish a dead Desktop instance.
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         let marker = self.profile_dir.clone();
-        let has_marked_process =
-            tokio::task::spawn_blocking(move || !processes_with_profile(&marker).is_empty())
-                .await
-                .unwrap_or(false);
+        let has_marked_process = tokio::task::spawn_blocking(move || {
+            processes_with_profile(&marker).map(|pids| !pids.is_empty())
+        })
+        .await
+        .context("Desktop startup process scan task failed")??;
         if !has_marked_process {
             terminate_process_tree(root_pid).await;
             anyhow::bail!("Claude Desktop Lite exited during startup; launch rolled back");
@@ -454,6 +483,15 @@ impl InstanceAdapter for DesktopAdapter {
     }
 
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
+        self.process_tree_checked(handle)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(error = %error, "Desktop process scan failed during best-effort cleanup");
+                vec![handle.root_pid]
+            })
+    }
+
+    async fn process_tree_checked(&self, handle: &ProcessHandle) -> Result<Vec<u32>> {
         let profile_dir = self.profile_dir.clone();
         let scan_dir = profile_dir.clone();
         let (all_pids, marker_pids) = tokio::task::spawn_blocking(move || {
@@ -463,7 +501,9 @@ impl InstanceAdapter for DesktopAdapter {
             )
         })
         .await
-        .unwrap_or_default();
+        .context("Desktop process scan task failed")?;
+        let all_pids = all_pids?;
+        let marker_pids = marker_pids?;
 
         // The daemon owns the complete Claude.app family. A process without
         // the CIM profile markers is an unmanaged manual/legacy launch; stop
@@ -474,11 +514,11 @@ impl InstanceAdapter for DesktopAdapter {
             terminate_processes(&unmanaged).await;
         }
 
-        let mut pids = descendant_pids(handle.root_pid);
+        let mut pids = descendant_pids_checked(handle.root_pid)?;
         pids.extend(marker_pids);
         pids.sort_unstable();
         pids.dedup();
-        pids
+        Ok(pids)
     }
 }
 

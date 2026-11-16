@@ -1,5 +1,5 @@
 // Instance Adapters - unified interface for A/B/C/D instances
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -88,6 +88,14 @@ pub trait InstanceAdapter: Send + Sync {
     async fn launch(&self) -> Result<ProcessHandle>;
     async fn stop(&self, handle: &ProcessHandle) -> Result<()>;
     async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32>;
+
+    /// Return a process tree with an explicit scan error. Most adapters keep
+    /// the legacy best-effort method for rollback, while security validation
+    /// uses this checked form so a failed OS process query cannot be treated
+    /// as an empty/clean tree.
+    async fn process_tree_checked(&self, handle: &ProcessHandle) -> Result<Vec<u32>> {
+        Ok(self.process_tree(handle).await)
+    }
 }
 
 /// Apply the locale values derived from the current exit IP to a child
@@ -216,17 +224,35 @@ pub(crate) fn resolve_executable(candidates: &[&str]) -> Option<String> {
 /// parent query. Failed/vanished children are ignored because the verifier
 /// should inspect the processes that still exist at the instant of the check.
 pub fn descendant_pids(root_pid: u32) -> Vec<u32> {
+    descendant_pids_checked(root_pid).unwrap_or_else(|error| {
+        tracing::warn!(root_pid, error = %error, "failed to scan descendant processes");
+        vec![root_pid]
+    })
+}
+
+/// Enumerate a process and all descendants, preserving OS query failures for
+/// callers that need fail-closed security evidence.
+pub fn descendant_pids_checked(root_pid: u32) -> Result<Vec<u32>> {
     let mut result = vec![root_pid];
     let mut pending = vec![root_pid];
     while let Some(parent) = pending.pop() {
-        let Ok(output) = Command::new("pgrep")
+        let output = Command::new("pgrep")
             .args(["-P", &parent.to_string()])
             .output()
-        else {
+            .with_context(|| format!("failed to run pgrep for parent {parent}"))?;
+        if output.status.code() == Some(1) && output.stderr.is_empty() {
             continue;
-        };
+        }
         if !output.status.success() {
-            continue;
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!(
+                "pgrep failed for parent {parent}: {}",
+                if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                }
+            );
         }
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             if let Ok(pid) = line.trim().parse::<u32>() {
@@ -237,7 +263,7 @@ pub fn descendant_pids(root_pid: u32) -> Vec<u32> {
             }
         }
     }
-    result
+    Ok(result)
 }
 
 /// Terminate a captured set of instance processes, including helpers that
@@ -310,7 +336,7 @@ pub use web::WebAdapter;
 
 #[cfg(test)]
 mod tests {
-    use super::{descendant_pids, terminate_process_tree, InstanceKind};
+    use super::{descendant_pids, descendant_pids_checked, terminate_process_tree, InstanceKind};
     use std::process::{Command, Stdio};
 
     #[test]
@@ -319,6 +345,16 @@ mod tests {
             assert_eq!(InstanceKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(InstanceKind::parse("unknown"), None);
+    }
+
+    #[test]
+    fn checked_descendant_scan_keeps_the_root_and_reports_a_real_query() {
+        let root_pid = std::process::id();
+        match descendant_pids_checked(root_pid) {
+            Ok(pids) => assert!(pids.contains(&root_pid)),
+            Err(error) => assert!(error.to_string().contains("pgrep")),
+        }
+        assert_eq!(descendant_pids(root_pid).first().copied(), Some(root_pid));
     }
 
     #[tokio::test]

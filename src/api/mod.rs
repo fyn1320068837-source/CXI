@@ -5,6 +5,7 @@ use crate::instance::{
 };
 use crate::proxy::ProxyManager;
 use crate::storage::Storage;
+use anyhow::{Context, Result};
 use axum::{
     extract::ws::{WebSocket, WebSocketUpgrade},
     extract::Query,
@@ -49,7 +50,7 @@ pub async fn create_router(
     geo_profile: SharedGeoProfile,
     proxy_manager: Arc<ProxyManager>,
     allow_lan: bool,
-) -> Router {
+) -> Result<(Router, Arc<RwLock<InstanceManager>>)> {
     let (tx, _rx) = broadcast::channel(100);
     let log_buffer: Arc<RwLock<Vec<LogEntry>>> = Arc::new(RwLock::new(Vec::new()));
     let (request_log_tx, mut request_log_rx) = mpsc::channel::<RequestLogEntry>(1024);
@@ -80,11 +81,13 @@ pub async fn create_router(
         .with_allow_lan(allow_lan)
         .with_request_log_sender(request_log_tx)
         .with_storage(storage.clone());
-    if let Err(error) = instance_manager.cleanup_orphaned_sessions().await {
-        tracing::warn!(error = %error, "Failed to clean orphaned Web sessions");
-    }
+    instance_manager
+        .cleanup_orphaned_sessions()
+        .await
+        .context("failed to clean orphaned instance processes before serving API")?;
     let instance_manager = Arc::new(RwLock::new(instance_manager));
 
+    let shutdown_manager = instance_manager.clone();
     let state = AppState {
         tx,
         instance_manager,
@@ -94,7 +97,7 @@ pub async fn create_router(
         proxy_manager,
     };
 
-    Router::new()
+    let router = Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health_check))
         .route("/api/status", get(get_status))
@@ -110,7 +113,9 @@ pub async fn create_router(
         .route("/api/security/desktop", get(get_desktop_security))
         .route("/ws", get(websocket_handler))
         .nest_service("/static", ServeDir::new("web"))
-        .with_state(Arc::new(state))
+        .with_state(Arc::new(state));
+
+    Ok((router, shutdown_manager))
 }
 
 include!("status.rs");

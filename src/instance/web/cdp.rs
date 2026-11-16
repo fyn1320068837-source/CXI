@@ -36,19 +36,33 @@ fn parse_session_processes(output: &str, session_dir: &str) -> Vec<u32> {
 }
 
 pub(super) fn processes_using_session_dir(session_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
-        return Vec::new();
-    };
-
-    parse_session_processes(&String::from_utf8_lossy(&output.stdout), session_dir)
+    processes_using_session_dir_checked(session_dir).unwrap_or_default()
 }
 
 pub(super) fn processes_using_session_marker(session_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps").args(["-axo", "pid=,command="]).output() else {
-        return Vec::new();
-    };
+    processes_using_session_marker_checked(session_dir).unwrap_or_default()
+}
 
-    String::from_utf8_lossy(&output.stdout)
+fn ps_process_output() -> Result<String> {
+    let output = Command::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .context("failed to run ps while scanning Chromium processes")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ps failed while scanning Chromium processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub(super) fn processes_using_session_dir_checked(session_dir: &str) -> Result<Vec<u32>> {
+    Ok(parse_session_processes(&ps_process_output()?, session_dir))
+}
+
+pub(super) fn processes_using_session_marker_checked(session_dir: &str) -> Result<Vec<u32>> {
+    Ok(ps_process_output()?
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -59,7 +73,7 @@ pub(super) fn processes_using_session_marker(session_dir: &str) -> Vec<u32> {
             }
             pid.trim().parse().ok()
         })
-        .collect()
+        .collect())
 }
 
 #[derive(Debug, Deserialize, Clone)]

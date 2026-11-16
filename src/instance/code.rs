@@ -5,7 +5,7 @@ use super::{
     HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Command;
 
@@ -55,13 +55,24 @@ fn parse_processes_with_home(output: &str, profile_dir: &str) -> Vec<u32> {
 }
 
 fn processes_with_home(profile_dir: &str) -> Vec<u32> {
-    let Ok(output) = Command::new("ps")
+    processes_with_home_checked(profile_dir).unwrap_or_default()
+}
+
+fn processes_with_home_checked(profile_dir: &str) -> Result<Vec<u32>> {
+    let output = Command::new("ps")
         .args(["-eww", "-axo", "pid=,command="])
         .output()
-    else {
-        return Vec::new();
-    };
-    parse_processes_with_home(&String::from_utf8_lossy(&output.stdout), profile_dir)
+        .context("failed to run ps while scanning Claude Code processes")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ps failed while scanning Claude Code processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_processes_with_home(
+        &String::from_utf8_lossy(&output.stdout),
+        profile_dir,
+    ))
 }
 
 async fn terminate_code_processes(root_pid: u32, profile_dir: &str) {
@@ -145,6 +156,19 @@ impl InstanceAdapter for CodeAdapter {
         pids.sort_unstable();
         pids.dedup();
         pids
+    }
+
+    async fn process_tree_checked(&self, handle: &ProcessHandle) -> Result<Vec<u32>> {
+        let profile_dir = self.profile_dir.clone();
+        let marker_pids =
+            tokio::task::spawn_blocking(move || processes_with_home_checked(&profile_dir))
+                .await
+                .context("Claude Code process scan task failed")??;
+        let mut pids = super::descendant_pids_checked(handle.root_pid)?;
+        pids.extend(marker_pids);
+        pids.sort_unstable();
+        pids.dedup();
+        Ok(pids)
     }
 }
 

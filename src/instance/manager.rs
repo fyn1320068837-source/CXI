@@ -195,6 +195,23 @@ impl InstanceManager {
         Ok(())
     }
 
+    pub async fn stop_all(&self) -> Result<()> {
+        let mut failures = Vec::new();
+        for kind in InstanceKind::ALL {
+            if let Err(error) = self.stop(kind).await {
+                failures.push(format!("{}: {error}", kind.as_str()));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "failed to stop instances: {}",
+                failures.join("; ")
+            ))
+        }
+    }
+
     pub async fn is_running(&self, kind: InstanceKind) -> bool {
         self.runtime.is_running(kind).await
     }
@@ -222,7 +239,37 @@ impl InstanceManager {
             };
 
             let adapter = self.adapter_for(kind);
-            let pids = adapter.process_tree(handle).await;
+            let pids = match adapter.process_tree_checked(handle).await {
+                Ok(pids) => pids,
+                Err(error) => {
+                    let details = format!("process scan failed: {error}");
+                    let kind_str = kind.as_str();
+                    tracing::error!(instance = %kind_str, error = %error, "Instance process scan failed closed");
+                    if let Some(storage) = &self.storage {
+                        if let Err(storage_error) = storage
+                            .save_validation_evidence_async(kind_str, "fail", 0, 0, 0, &details)
+                            .await
+                        {
+                            tracing::warn!(
+                                instance = %kind_str,
+                                error = %storage_error,
+                                "Failed to persist process scan failure"
+                            );
+                        }
+                    }
+                    result.insert(
+                        kind,
+                        InstanceValidation {
+                            status: ValidationStatus::Fail,
+                            details,
+                            checked_at: Some(chrono::Utc::now().to_rfc3339()),
+                            reason: Some("process_scan_failed".to_string()),
+                            direct_endpoints: Vec::new(),
+                        },
+                    );
+                    continue;
+                }
+            };
             match self.verifier.verify_process(&pids).await {
                 Ok(check) => {
                     let snapshot = check.snapshot();

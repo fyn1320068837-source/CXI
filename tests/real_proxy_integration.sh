@@ -45,6 +45,7 @@ python3 - "$status" "$proxy_test" <<'PY'
 import json, sys
 status, proxy_test = map(json.loads, sys.argv[1:])
 assert status["proxy"]["healthy"], status
+assert status["firewall"]["mode"] == "allowed", status
 assert proxy_test["healthy"], proxy_test
 assert proxy_test.get("exit_ip"), proxy_test
 assert proxy_test.get("geo", {}).get("timezone"), proxy_test
@@ -202,6 +203,7 @@ assert payload.get("success"), payload
 assert payload.get("verdict") == "PASS", payload
 assert payload.get("web", {}).get("direct") == 0, payload
 assert payload.get("checks", {}).get("direct_zero"), payload
+assert payload.get("checks", {}).get("pf_fail_closed"), payload
 assert payload.get("checks", {}).get("validation_pass"), payload
 PY
   elif [[ "$kind" == "desktop" ]]; then
