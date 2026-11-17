@@ -200,10 +200,17 @@ PY
 import json, sys
 payload = json.loads(sys.argv[1])
 assert payload.get("success"), payload
-assert payload.get("verdict") == "PASS", payload
+assert payload.get("verdict") in ("PASS", "UNKNOWN"), payload
+if payload.get("active_probe_status") == "pass":
+    assert payload["verdict"] == "PASS", payload
+else:
+    # This script checks connections and launch settings. Only the separate
+    # active test/capture can prove DNS, STUN and IPv6 in the current session.
+    assert payload["verdict"] == "UNKNOWN", payload
+    print("INFO: process regression passed; active leak acceptance is still pending")
 assert payload.get("web", {}).get("direct") == 0, payload
 assert payload.get("checks", {}).get("direct_zero"), payload
-assert payload.get("checks", {}).get("pf_fail_closed"), payload
+assert payload.get("firewall", {}).get("global_verified"), payload
 assert payload.get("checks", {}).get("validation_pass"), payload
 PY
   elif [[ "$kind" == "desktop" ]]; then

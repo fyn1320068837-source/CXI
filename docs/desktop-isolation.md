@@ -27,6 +27,38 @@ Desktop Lite 的结论是分层的：网络证据可以得到 `PASS`、`FAIL` �
 位置仍不支持可靠覆盖，时区和语言属于 best-effort。控制台和
 `/api/security/desktop` 会把这三个维度分开显示。
 
+Desktop 使用宿主用户的 HOME/登录钥匙串，因此 CIM 可以复用 Claude Key，但这也意味着
+Keychain 不是 Desktop Lite 的独立安全边界；同一 macOS 用户下的其他进程仍可能访问被授予的
+钥匙串项目。Desktop 的网络结论为进程树范围，UDP 53、IPv6-only 和原生 Electron 能力仍需
+单独采样，不能把 `direct=0` 扩大为全局无泄漏。
+
+## Desktop 登录链路
+
+Claude Desktop 的 Google 登录由 Electron 通过 macOS LaunchServices 打开系统默认
+浏览器。CIM 不劫持 `http`/`https` 默认浏览器，也不修改 Claude.app 已注册的
+`claude` 或 `msauth.com.anthropic.claudefordesktop` 回调 scheme；这些做法会破坏
+签名、更新和 OAuth 的 PKCE 状态边界。
+
+因此，Web profile 中的 Claude Cookie 不会直接成为 Desktop 的登录态。Desktop 登录后
+仍把自己的凭据写入独立 `user-data` 和 macOS Keychain。需要复用 CIM Web 中已有的
+Google 会话时，使用受控的一次性 URL 转交流程：
+
+1. 在终端先执行 `cim desktop-auth --watch`，再点击 Desktop 的 Google 登录。
+2. CIM 会在 120 秒内读取 Edge/Chrome/Safari 当前认证页地址，校验 HTTPS 和认证域名，
+   然后在 CIM Web 的持久化 profile 中打开新标签页；不会输出或记录 URL。
+3. 在 CIM Web 完成登录后关闭系统浏览器窗口，回到 Desktop 等待登录完成。
+
+如果不希望授予终端控制浏览器的自动化权限，仍可使用手动备用方式：在系统浏览器只复制
+完整地址栏 URL，然后执行 `cim desktop-auth`。
+
+桥接只转发 URL，不读取或复制 Cookie、Keychain、refresh token 或授权码；请求 URL
+不会写入 CIM 日志。`--watch` 只在命令运行期间轮询浏览器当前标签页，超时后退出；
+没有 Claude 官方的外部浏览器 handoff 或 device-code 协议前，CIM 不会自动劫持系统浏览器，
+也不会声称 Desktop 和 Web 已共享登录态。
+
+OAuth 的首个页面请求仍由系统默认浏览器发起；如果该浏览器没有走 CIM 代理，CIM 无法
+回溯这一次请求。需要登录阶段也 fail-closed 时，应使用已配置代理的受控浏览器完成认证。
+
 ## 方案比较
 
 | 方案 | 网络隔离 | 时区/语言 | 位置 | 成本与限制 |

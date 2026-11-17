@@ -56,16 +56,6 @@ impl InstanceRuntime {
         self.state.read().await.handles.contains_key(&kind)
     }
 
-    pub async fn pid_all(&self) -> HashMap<InstanceKind, Option<u32>> {
-        self.state
-            .read()
-            .await
-            .handles
-            .iter()
-            .map(|(kind, handle)| (*kind, Some(handle.root_pid)))
-            .collect()
-    }
-
     pub async fn handles(&self) -> HashMap<InstanceKind, ProcessHandle> {
         self.state.read().await.handles.clone()
     }
@@ -217,6 +207,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_and_legacy_ids_share_one_reservation_and_handle() {
+        for app in &crate::instance::APPLICATIONS {
+            let runtime = InstanceRuntime::new();
+            let canonical = InstanceKind::parse(app.id).unwrap();
+            let legacy = InstanceKind::parse(app.legacy_alias).unwrap();
+            let reservation = runtime.reserve(canonical).await.unwrap();
+            assert!(runtime.reserve(legacy).await.is_err());
+            runtime
+                .commit(reservation, ProcessHandle { root_pid: 999_999 })
+                .await;
+            assert!(runtime.is_running(legacy).await);
+            assert!(runtime.reserve(legacy).await.is_err());
+            assert_eq!(runtime.handles().await.len(), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn reserve_rejects_duplicate_and_releases_after_abort() {
         let runtime = InstanceRuntime::new();
         let reservation = runtime.reserve(InstanceKind::Web).await.unwrap();
@@ -234,7 +241,10 @@ mod tests {
             .await;
 
         assert!(runtime.reserve(InstanceKind::Code).await.is_err());
-        assert_eq!(runtime.pid_all().await[&InstanceKind::Code], Some(999_999));
+        assert_eq!(
+            runtime.handles().await[&InstanceKind::Code].root_pid,
+            999_999
+        );
     }
 
     #[tokio::test]

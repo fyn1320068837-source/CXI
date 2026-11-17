@@ -51,15 +51,15 @@ async fn get_validation_history(
     axum::extract::Path(kind): axum::extract::Path<String>,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let allowed = matches!(kind.as_str(), "code" | "desktop" | "vscode" | "web");
-    if !allowed {
+    let Some(instance_kind) = InstanceKind::parse(&kind) else {
         return Json(serde_json::json!({
             "success": false,
             "error": format!("Unknown instance kind: {}", kind),
         }));
-    }
+    };
 
-    match state.storage.recent_validation_evidence_async(&kind, 50).await {
+    // Both public names query the existing history; no database migration.
+    match state.storage.recent_validation_evidence_async(instance_kind.as_str(), 50).await {
         Ok(evidence) => Json(serde_json::json!({
             "success": true,
             "instance": kind,

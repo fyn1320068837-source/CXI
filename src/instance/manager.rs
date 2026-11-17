@@ -1,58 +1,60 @@
 // Instance Manager - manages lifecycle of all instances
 use super::runtime::{InstanceRuntime, LaunchTransaction};
-use super::{
-    CodeAdapter, DesktopAdapter, InstanceAdapter, InstanceKind, RequestLogSender, ValidationStatus,
-    VsCodeAdapter, WebAdapter,
-};
+use super::{InstanceAdapter, InstanceKind, RequestLogSender, ValidationStatus, APPLICATIONS};
 use crate::geoip::{GeoProfile, SharedGeoProfile};
 use crate::storage::Storage;
 use crate::verifier::{NetworkVerifier, VerificationStatus};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct InstanceManager {
     runtime: InstanceRuntime,
-    code: Arc<CodeAdapter>,
-    desktop: Arc<DesktopAdapter>,
-    vscode: Arc<VsCodeAdapter>,
-    web: Arc<WebAdapter>,
+    configs: crate::config::InstanceConfigs,
+    adapters: HashMap<InstanceKind, Arc<dyn InstanceAdapter>>,
     storage: Option<Arc<Storage>>,
     verifier: NetworkVerifier,
     geo_profile: SharedGeoProfile,
+}
+
+/// One consistent view of instance state for the API and security reports.
+pub struct InstanceSnapshot {
+    pub status: HashMap<InstanceKind, bool>,
+    pub pids: HashMap<InstanceKind, Option<u32>>,
+    pub validation: HashMap<InstanceKind, InstanceValidation>,
 }
 
 impl InstanceManager {
     pub fn with_geo_profile(geo_profile: SharedGeoProfile) -> Self {
         Self {
             runtime: InstanceRuntime::new(),
-            code: Arc::new(CodeAdapter::new_with_geo_profile(
-                format!("{}/.cim/instances/code", std::env::var("HOME").unwrap()),
-                geo_profile.clone(),
-            )),
-            desktop: Arc::new(DesktopAdapter::new_with_geo_profile(
-                format!("{}/.cim/instances/desktop", std::env::var("HOME").unwrap()),
-                geo_profile.clone(),
-            )),
-            vscode: Arc::new(VsCodeAdapter::new_with_geo_profile(
-                format!(
-                    "{}/.cim/instances/vscode/data",
-                    std::env::var("HOME").unwrap()
-                ),
-                format!(
-                    "{}/.cim/instances/vscode/extensions",
-                    std::env::var("HOME").unwrap()
-                ),
-                geo_profile.clone(),
-            )),
-            web: Arc::new(WebAdapter::new_with_geo_profile(
-                format!("{}/.cim/instances/web", std::env::var("HOME").unwrap()),
-                geo_profile.clone(),
-            )),
+            configs: crate::config::InstanceConfigs::default(),
+            adapters: APPLICATIONS
+                .iter()
+                .map(|app| {
+                    (
+                        app.kind,
+                        app.create_adapter(&std::env::var("HOME").unwrap(), geo_profile.clone()),
+                    )
+                })
+                .collect(),
             storage: None,
             verifier: NetworkVerifier::new(),
             geo_profile,
         }
+    }
+
+    pub fn with_instance_configs(
+        mut self,
+        configs: crate::config::InstanceConfigs,
+    ) -> Result<Self> {
+        configs.validate()?;
+        self.configs = configs;
+        Ok(self)
+    }
+
+    pub fn instance_configs(&self) -> &crate::config::InstanceConfigs {
+        &self.configs
     }
 
     pub fn with_allow_lan(mut self, allow_lan: bool) -> Self {
@@ -66,30 +68,38 @@ impl InstanceManager {
     }
 
     pub fn with_request_log_sender(mut self, sender: RequestLogSender) -> Self {
-        if let Some(web) = Arc::get_mut(&mut self.web) {
-            web.set_request_log_sender(sender);
-        } else {
-            tracing::warn!("Could not attach request log sink to WebAdapter");
+        for adapter in self.adapters.values_mut() {
+            if let Some(adapter) = Arc::get_mut(adapter) {
+                adapter.set_request_log_sender(sender.clone());
+            } else {
+                tracing::warn!("Could not attach request log sink to shared adapter");
+            }
         }
         self
     }
 
     pub async fn cleanup_orphaned_sessions(&self) -> Result<()> {
-        self.web.cleanup_orphaned_sessions().await?;
-        self.desktop.cleanup_orphaned_processes().await
+        // Preserve Web-before-Desktop cleanup; all hooks run even if disabled.
+        let mut apps = APPLICATIONS.iter().collect::<Vec<_>>();
+        apps.sort_by_key(|app| app.cleanup_priority);
+        for app in apps {
+            self.adapter_for(app.kind)?
+                .cleanup_orphaned_sessions()
+                .await?;
+        }
+        Ok(())
     }
 
-    fn adapter_for(&self, kind: InstanceKind) -> Arc<dyn InstanceAdapter> {
-        match kind {
-            InstanceKind::Code => self.code.clone(),
-            InstanceKind::Desktop => self.desktop.clone(),
-            InstanceKind::VsCode => self.vscode.clone(),
-            InstanceKind::Web => self.web.clone(),
-        }
+    fn adapter_for(&self, kind: InstanceKind) -> Result<Arc<dyn InstanceAdapter>> {
+        self.adapters
+            .get(&kind)
+            .cloned()
+            .with_context(|| format!("no registered adapter for {}", kind.definition().id))
     }
 
     pub async fn launch(&self, kind: InstanceKind) -> Result<()> {
-        let adapter = self.adapter_for(kind);
+        self.configs.require_enabled(kind)?;
+        let adapter = self.adapter_for(kind)?;
         let reservation = self.runtime.reserve(kind).await?;
 
         let capability = adapter.detect().await;
@@ -110,7 +120,7 @@ impl InstanceManager {
         // transient GeoIP outage can never expose a first navigation with the
         // host's locale/timezone. The proxy tunnel itself remains healthy and
         // can recover GeoIP independently.
-        if kind == InstanceKind::Web {
+        if kind.definition().requires_geo_profile {
             let profile = self.geo_profile.read().await;
             if !web_profile_ready(&profile) {
                 drop(profile);
@@ -177,7 +187,7 @@ impl InstanceManager {
     }
 
     pub async fn stop(&self, kind: InstanceKind) -> Result<()> {
-        let adapter = self.adapter_for(kind);
+        let adapter = self.adapter_for(kind)?;
         if self.runtime.stop(kind, &adapter).await? {
             if let Some(ref storage) = self.storage {
                 match storage
@@ -197,7 +207,7 @@ impl InstanceManager {
 
     pub async fn stop_all(&self) -> Result<()> {
         let mut failures = Vec::new();
-        for kind in InstanceKind::ALL {
+        for kind in APPLICATIONS.iter().map(|app| app.kind) {
             if let Err(error) = self.stop(kind).await {
                 failures.push(format!("{}: {error}", kind.as_str()));
             }
@@ -212,34 +222,70 @@ impl InstanceManager {
         }
     }
 
+    /// Route a Desktop authentication URL through the persistent CIM Web
+    /// profile. The Web adapter validates the destination and performs the
+    /// navigation through its loopback DevTools session.
+    pub async fn open_web_auth_url(&self, url: &str) -> Result<()> {
+        self.configs.require_enabled(InstanceKind::Desktop)?;
+        let browser_id = self
+            .configs
+            .get(InstanceKind::Desktop)
+            .auth_browser
+            .as_deref()
+            .context("Desktop has no authentication browser configured")?;
+        let browser = InstanceKind::parse(browser_id).context("unknown authentication browser")?;
+        self.configs.require_enabled(browser)?;
+        let adapter = self.adapter_for(browser)?;
+        if !self.is_running(browser).await {
+            self.launch(browser)
+                .await
+                .context("failed to start CIM Web for Desktop authentication")?;
+        }
+        adapter.open_auth_url(url).await
+    }
+
     pub async fn is_running(&self, kind: InstanceKind) -> bool {
         self.runtime.is_running(kind).await
     }
 
-    pub async fn status_all(&self) -> HashMap<InstanceKind, bool> {
-        let mut status = HashMap::new();
-        for kind in InstanceKind::ALL {
-            status.insert(kind, self.is_running(kind).await);
-        }
-        status
+    pub async fn any_running(&self) -> bool {
+        !self.runtime.handles().await.is_empty()
     }
 
-    pub async fn pid_all(&self) -> HashMap<InstanceKind, Option<u32>> {
-        self.runtime.pid_all().await
-    }
-
-    pub async fn validation_all(&self) -> HashMap<InstanceKind, InstanceValidation> {
+    pub async fn snapshot_all(&self) -> InstanceSnapshot {
         let handles = self.runtime.handles().await;
+        let status = APPLICATIONS
+            .iter()
+            .map(|app| app.kind)
+            .map(|kind| (kind, handles.contains_key(&kind)))
+            .collect();
+        let pids = APPLICATIONS
+            .iter()
+            .map(|app| app.kind)
+            .map(|kind| (kind, handles.get(&kind).map(|handle| handle.root_pid)))
+            .collect();
+        let validation = self.validation_for_handles(&handles).await;
+        InstanceSnapshot {
+            status,
+            pids,
+            validation,
+        }
+    }
+
+    async fn validation_for_handles(
+        &self,
+        handles: &HashMap<InstanceKind, super::ProcessHandle>,
+    ) -> HashMap<InstanceKind, InstanceValidation> {
         let mut result = HashMap::new();
 
-        for kind in InstanceKind::ALL {
+        for kind in APPLICATIONS.iter().map(|app| app.kind) {
             let Some(handle) = handles.get(&kind) else {
                 result.insert(kind, InstanceValidation::unknown("instance stopped"));
                 continue;
             };
 
-            let adapter = self.adapter_for(kind);
-            let pids = match adapter.process_tree_checked(handle).await {
+            let scan = async { self.adapter_for(kind)?.process_tree_checked(handle).await }.await;
+            let pids = match scan {
                 Ok(pids) => pids,
                 Err(error) => {
                     let details = format!("process scan failed: {error}");
@@ -395,6 +441,219 @@ impl InstanceValidation {
 mod tests {
     use super::web_profile_ready;
     use crate::geoip::GeoProfile;
+
+    struct RecordingAdapter {
+        id: &'static str,
+        events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RecordingAdapter {
+        fn record(&self, action: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("{}:{action}", self.id));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::instance::InstanceAdapter for RecordingAdapter {
+        fn set_request_log_sender(&mut self, _: crate::instance::RequestLogSender) {
+            self.record("logs");
+        }
+        async fn cleanup_orphaned_sessions(&self) -> anyhow::Result<()> {
+            self.record("cleanup");
+            Ok(())
+        }
+        async fn open_auth_url(&self, _: &str) -> anyhow::Result<()> {
+            self.record("auth");
+            Ok(())
+        }
+        async fn detect(&self) -> crate::instance::CapabilityReport {
+            self.record("detect");
+            crate::instance::CapabilityReport {
+                installed: true,
+                version: None,
+                path: None,
+            }
+        }
+        async fn prepare(&self) -> anyhow::Result<()> {
+            self.record("prepare");
+            Ok(())
+        }
+        async fn launch(&self) -> anyhow::Result<crate::instance::ProcessHandle> {
+            self.record("launch");
+            Ok(crate::instance::ProcessHandle { root_pid: 999_999 })
+        }
+        async fn stop(&self, _: &crate::instance::ProcessHandle) -> anyhow::Result<()> {
+            self.record("stop");
+            Ok(())
+        }
+        async fn process_tree(&self, _: &crate::instance::ProcessHandle) -> Vec<u32> {
+            vec![]
+        }
+        async fn process_tree_checked(
+            &self,
+            _: &crate::instance::ProcessHandle,
+        ) -> anyhow::Result<Vec<u32>> {
+            self.record("scan");
+            anyhow::bail!("fixture scan error")
+        }
+    }
+
+    fn recording_manager() -> (
+        super::InstanceManager,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let geo = std::sync::Arc::new(tokio::sync::RwLock::new(GeoProfile {
+            source_ip: Some("203.0.113.5".into()),
+            timezone: Some("America/New_York".into()),
+            language: Some("en-US".into()),
+            locale: Some("en_US.UTF-8".into()),
+            ..GeoProfile::default()
+        }));
+        let mut manager = super::InstanceManager::with_geo_profile(geo);
+        for app in &crate::instance::APPLICATIONS {
+            manager.adapters.insert(
+                app.kind,
+                std::sync::Arc::new(RecordingAdapter {
+                    id: app.id,
+                    events: events.clone(),
+                }),
+            );
+        }
+        (manager, events)
+    }
+
+    #[tokio::test]
+    async fn registered_dispatch_preserves_single_instance_lifecycle_and_scan_failure() {
+        let (manager, events) = recording_manager();
+        for app in &crate::instance::APPLICATIONS {
+            let alias = crate::instance::InstanceKind::parse(app.legacy_alias).unwrap();
+            assert!(std::sync::Arc::ptr_eq(
+                &manager.adapter_for(alias).unwrap(),
+                &manager.adapter_for(app.kind).unwrap()
+            ));
+            manager.launch(app.kind).await.unwrap();
+            assert!(manager.launch(alias).await.is_err());
+        }
+        let snapshot = manager.snapshot_all().await;
+        assert_eq!(snapshot.status.len(), 4);
+        for value in snapshot.validation.values() {
+            assert!(matches!(
+                value.status,
+                crate::instance::ValidationStatus::Fail
+            ));
+            assert_eq!(value.reason.as_deref(), Some("process_scan_failed"));
+        }
+        manager.stop_all().await.unwrap();
+        assert!(!manager.any_running().await);
+        let events = events.lock().unwrap();
+        for app in &crate::instance::APPLICATIONS {
+            for action in ["prepare", "launch", "scan", "stop"] {
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| **event == format!("{}:{action}", app.id))
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_hooks_preserve_cleanup_order_logs_and_auth_target() {
+        let (manager, events) = recording_manager();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let manager = manager.with_request_log_sender(tx);
+        manager.cleanup_orphaned_sessions().await.unwrap();
+        let cleanups = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.ends_with(":cleanup"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &cleanups[..2],
+            ["claude-web:cleanup", "claude-desktop:cleanup"]
+        );
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.ends_with(":logs"))
+                .count(),
+            4
+        );
+        manager
+            .open_web_auth_url("https://claude.ai/login")
+            .await
+            .unwrap();
+        assert!(events.lock().unwrap().contains(&"claude-web:auth".into()));
+        assert!(!events
+            .lock()
+            .unwrap()
+            .contains(&"claude-desktop:launch".into()));
+        manager.stop_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn registered_web_still_requires_geo_and_missing_adapter_fails_closed() {
+        let (mut manager, events) = recording_manager();
+        *manager.geo_profile.write().await = GeoProfile::default();
+        let error = manager
+            .launch(crate::instance::InstanceKind::Web)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("GeoIP"));
+        assert!(!events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.ends_with(":prepare")));
+        manager
+            .adapters
+            .remove(&crate::instance::InstanceKind::Code);
+        assert!(manager
+            .launch(crate::instance::InstanceKind::Code)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no registered adapter"));
+        assert!(!manager.any_running().await);
+    }
+
+    #[tokio::test]
+    async fn disabled_instances_are_rejected_before_detection_or_preparation() {
+        let configs: crate::config::InstanceConfigs =
+            toml::from_str("[claude-web]\nenabled = false\n[claude-desktop]\nenabled = false")
+                .unwrap();
+        let manager = super::InstanceManager::with_geo_profile(std::sync::Arc::new(
+            tokio::sync::RwLock::new(GeoProfile::default()),
+        ))
+        .with_instance_configs(configs)
+        .unwrap();
+        for id in ["web", "claude-web", "desktop", "claude-desktop"] {
+            let error = manager
+                .launch(crate::instance::InstanceKind::parse(id).unwrap())
+                .await
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("disabled by instance configuration"));
+        }
+        assert!(manager
+            .open_web_auth_url("https://claude.ai/login")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("disabled"));
+        assert!(!manager.any_running().await);
+    }
 
     #[test]
     fn web_launch_requires_runtime_geo_profile() {

@@ -1,8 +1,8 @@
 // VS Code Claude extension adapter (Instance C)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, resolve_executable,
-    terminate_process_tree, terminate_processes, CapabilityReport, InstanceAdapter, ProcessHandle,
-    HTTP_PROXY_ENDPOINT,
+    apply_instance_directories, apply_locale_env, clear_instance_environment, descendant_pids,
+    isolated_command, resolve_executable, terminate_process_tree, terminate_processes,
+    CapabilityReport, InstanceAdapter, ProcessHandle, HTTP_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::{Context, Result};
@@ -35,6 +35,10 @@ fn configure_vscode_command(
     extensions_dir: &str,
     profile: &crate::geoip::GeoProfile,
 ) {
+    clear_instance_environment(
+        command,
+        "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    );
     let proxy_arg = format!("--proxy-server={HTTP_PROXY_ENDPOINT}");
     command.args([
         "--user-data-dir",
@@ -47,6 +51,7 @@ fn configure_vscode_command(
     if let Some(language) = profile.language.as_deref() {
         command.arg("--locale").arg(language);
     }
+    apply_instance_directories(command, user_data_dir, user_data_dir);
     apply_locale_env(command, profile);
 }
 
@@ -125,6 +130,16 @@ impl InstanceAdapter for VsCodeAdapter {
         // Create directories
         std::fs::create_dir_all(&self.user_data_dir)?;
         std::fs::create_dir_all(&self.extensions_dir)?;
+        for child in ["tmp", "config", "cache", "data", "state"] {
+            std::fs::create_dir_all(std::path::Path::new(&self.user_data_dir).join(child))?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&self.user_data_dir, &self.extensions_dir] {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
 
         // Install Claude extension
         let executable = self

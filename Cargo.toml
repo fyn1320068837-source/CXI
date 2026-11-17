@@ -47,3 +47,10 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 async-trait = "0.1"
 futures = "0.3"
 tokio-tungstenite = "0.24"
+
+# Keep local build artifacts small. The test profile inherits these settings.
+# Dependency artifacts are still reused; only incremental compiler state and
+# debug information are disabled. Release builds retain their defaults.
+[profile.dev]
+debug = 0
+incremental = false

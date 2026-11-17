@@ -10,6 +10,7 @@ CIM 不引入虚拟机，借鉴 Cage 的检查清单，把能在宿主机可靠�
 | 代理故障关闭 | 健康态只允许 `127.0.0.1:7890/7891`；故障态阻断 `cimgrp` 全部出站协议 | 实例进程组 |
 | 进程连接 | 递归枚举实例 PID，分类 proxied/local/direct | 实例进程树 |
 | 浏览器策略 | 固定 SOCKS、host resolver、禁 QUIC、禁非代理 WebRTC UDP | 启动参数 |
+| CDP 控制面 | 随机 loopback 端口、限制 Origin；同机进程仍可能探测 | 启动参数与进程权限 |
 | 目录范围 | 每个实例使用独立 HOME、session、user-data、extensions 和 tmp | 实例目录 |
 | 证据时效 | 验证证据绑定实例和时间，90 秒后变为 UNKNOWN | 当前实例样本 |
 | DNS / WebRTC / IPv6 | 低频主动探测或 tcpdump；未采样时明确显示 `not_sampled` | 主动探测窗口 |
@@ -23,6 +24,11 @@ CIM 不引入虚拟机，借鉴 Cage 的检查清单，把能在宿主机可靠�
 - `UNSUPPORTED`：该能力由当前后端明确不支持，例如 Desktop Lite 的 CoreLocation 覆盖。
 
 `configured`、`isolated_profile` 和 `not_sampled` 都不是 PASS。控制台展示每个检查的状态和证据来源，避免把启动参数或历史结果当成当前网络安全证明。
+
+Web 的 CDP 端口只监听 loopback，且不再使用通配 Origin，但 Chromium DevTools 本身没有
+可配置的认证令牌；同一主机上具有本地执行能力的进程仍可能扫描端口并读取/导航该 profile。
+这不是跨主机暴露，也不等价于 VM 级隔离；长期 P1 方向是改用 `--remote-debugging-pipe`
+或受控 Unix socket。
 
 ## PF 健康态
 

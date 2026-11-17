@@ -395,6 +395,10 @@
                 <span class="lbl">系统位置</span>
                 <span class="val" id="desktop-security-location">—</span>
             </div>
+            <div class="proxy-row">
+                <span class="lbl">登录浏览器</span>
+                <span class="val" id="desktop-security-auth">—</span>
+            </div>
             <div id="desktop-security-reasons" style="margin-top:.65rem;color:var(--muted);font-size:.78rem">—</div>
             <div id="desktop-security-limitations" style="margin-top:.45rem;color:var(--muted);font-size:.72rem">—</div>
         </div>
@@ -825,6 +829,11 @@ function renderDesktopSecurity(s) {
     const location = s.location || {};
     document.getElementById('desktop-security-location').textContent =
         `${location.status || 'unknown'} · ${location.details || '—'}`;
+    const authentication = s.authentication || {};
+    document.getElementById('desktop-security-auth').textContent =
+        authentication.status === 'watch_available'
+            ? 'CIM Web · 自动监听可用（cim desktop-auth --watch）'
+            : `${authentication.browser || '—'} · ${authentication.status || 'unknown'}`;
     const reasons = s.reasons || [];
     document.getElementById('desktop-security-reasons').textContent =
         reasons.length ? `状态：${reasons.join('；')}` : '状态：未发现直连证据';

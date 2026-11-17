@@ -1,8 +1,8 @@
 // Claude Code CLI adapter (Instance A)
 use super::{
-    apply_locale_env, descendant_pids, isolated_command, resolve_executable,
+    apply_instance_directories, apply_locale_env, apply_proxy_environment,
+    clear_instance_environment, descendant_pids, isolated_command, resolve_executable,
     terminate_process_tree, terminate_processes, CapabilityReport, InstanceAdapter, ProcessHandle,
-    HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::{Context, Result};
@@ -28,12 +28,12 @@ fn configure_code_command(
     profile_dir: &str,
     profile: &crate::geoip::GeoProfile,
 ) {
-    command
-        .env("HOME", profile_dir)
-        .env("HTTPS_PROXY", HTTP_PROXY_ENDPOINT)
-        .env("HTTP_PROXY", HTTP_PROXY_ENDPOINT)
-        .env("ALL_PROXY", SOCKS_PROXY_ENDPOINT)
-        .env("NO_PROXY", LOOPBACK_NO_PROXY);
+    clear_instance_environment(
+        command,
+        "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    );
+    apply_instance_directories(command, profile_dir, profile_dir);
+    apply_proxy_environment(command);
     apply_locale_env(command, profile);
 }
 
@@ -121,6 +121,14 @@ impl InstanceAdapter for CodeAdapter {
     async fn prepare(&self) -> Result<()> {
         // Create isolated HOME directory for Claude Code
         std::fs::create_dir_all(&self.profile_dir)?;
+        for child in ["tmp", "config", "cache", "data", "state"] {
+            std::fs::create_dir_all(std::path::Path::new(&self.profile_dir).join(child))?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.profile_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
         Ok(())
     }
 
@@ -204,11 +212,11 @@ mod tests {
         );
         assert_eq!(
             env_value(&command, "ALL_PROXY").as_deref(),
-            Some("socks5://127.0.0.1:7891")
+            Some("socks5h://127.0.0.1:7891")
         );
         assert_eq!(
             env_value(&command, "NO_PROXY").as_deref(),
-            Some("localhost,127.0.0.1")
+            Some("localhost,127.0.0.1,::1,[::1]")
         );
         assert_eq!(
             env_value(&command, "TZ").as_deref(),

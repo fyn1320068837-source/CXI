@@ -7,38 +7,14 @@ use std::path::Path;
 use std::process::Command;
 use tokio::sync::mpsc;
 
-use crate::geoip::GeoProfile;
+mod environment;
+pub(crate) use environment::{
+    apply_instance_directories, apply_locale_env, apply_proxy_environment,
+    clear_instance_environment,
+};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum InstanceKind {
-    Code,    // A: Claude Code CLI
-    Desktop, // B: Claude Desktop app
-    VsCode,  // C: VS Code extension
-    Web,     // D: Claude Web in Chromium
-}
-
-impl InstanceKind {
-    pub const ALL: [Self; 4] = [Self::Code, Self::Desktop, Self::VsCode, Self::Web];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Code => "code",
-            Self::Desktop => "desktop",
-            Self::VsCode => "vscode",
-            Self::Web => "web",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "code" => Some(Self::Code),
-            "desktop" => Some(Self::Desktop),
-            "vscode" => Some(Self::VsCode),
-            "web" => Some(Self::Web),
-            _ => None,
-        }
-    }
-}
+mod registry;
+pub use registry::{ApplicationDefinition, InstanceKind, APPLICATIONS};
 
 #[derive(Debug, Clone)]
 pub struct ProcessHandle {
@@ -64,7 +40,11 @@ pub type RequestLogSender = mpsc::Sender<RequestLogEntry>;
 
 pub(crate) const HTTP_PROXY_ENDPOINT: &str = "http://127.0.0.1:7890";
 pub(crate) const SOCKS_PROXY_ENDPOINT: &str = "socks5://127.0.0.1:7891";
-pub(crate) const LOOPBACK_NO_PROXY: &str = "localhost,127.0.0.1";
+/// Environment-variable form that makes clients resolve hostnames through
+/// the SOCKS tunnel instead of doing a local DNS lookup first. Chromium's
+/// `--proxy-server` flag continues to use the regular `socks5://` spelling.
+pub(crate) const SOCKS_PROXY_ENV_ENDPOINT: &str = "socks5h://127.0.0.1:7891";
+pub(crate) const LOOPBACK_NO_PROXY: &str = "localhost,127.0.0.1,::1,[::1]";
 
 #[derive(Debug)]
 pub struct CapabilityReport {
@@ -83,6 +63,15 @@ pub enum ValidationStatus {
 
 #[async_trait]
 pub trait InstanceAdapter: Send + Sync {
+    /// Optional product hooks; unsupported auth must never fall back to a system browser.
+    fn set_request_log_sender(&mut self, _sender: RequestLogSender) {}
+    async fn cleanup_orphaned_sessions(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn open_auth_url(&self, _url: &str) -> Result<()> {
+        anyhow::bail!("authentication handoff is unsupported by this adapter")
+    }
+
     async fn detect(&self) -> CapabilityReport;
     async fn prepare(&self) -> Result<()>;
     async fn launch(&self) -> Result<ProcessHandle>;
@@ -95,19 +84,6 @@ pub trait InstanceAdapter: Send + Sync {
     /// as an empty/clean tree.
     async fn process_tree_checked(&self, handle: &ProcessHandle) -> Result<Vec<u32>> {
         Ok(self.process_tree(handle).await)
-    }
-}
-
-/// Apply the locale values derived from the current exit IP to a child
-/// process. The host process is never modified; only newly launched
-/// instances receive these overrides.
-pub fn apply_locale_env(command: &mut Command, profile: &GeoProfile) {
-    if let Some(timezone) = profile.timezone.as_deref() {
-        command.env("TZ", timezone);
-    }
-    if let Some(locale) = profile.locale.as_deref() {
-        command.env("LANG", locale);
-        command.env("LC_ALL", locale);
     }
 }
 
@@ -147,7 +123,29 @@ pub fn isolation_group_gid() -> Option<u32> {
 /// instance. The API layer uses this as a launch gate so a missing helper
 /// cannot silently downgrade a protected instance to a direct child process.
 pub fn isolation_ready() -> bool {
-    isolation_group_gid().is_some() && Path::new(INSTANCE_LAUNCHER).is_file()
+    isolation_group_gid().is_some() && trusted_instance_launcher()
+}
+
+fn trusted_instance_launcher() -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(INSTANCE_LAUNCHER) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // The helper is a privilege boundary. It must be root-owned and
+        // cannot be writable by group/other users before the daemon treats
+        // the isolation path as available.
+        metadata.uid() == 0 && metadata.permissions().mode() & 0o022 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -166,7 +164,7 @@ pub fn isolated_command(program: impl AsRef<OsStr>) -> Command {
     let Some(gid) = isolation_group_gid() else {
         return Command::new(program);
     };
-    if !Path::new(INSTANCE_LAUNCHER).is_file() {
+    if !trusted_instance_launcher() {
         return Command::new(program);
     }
 

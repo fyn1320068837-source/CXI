@@ -85,6 +85,33 @@ fn clear_profile_locks(adapter: &WebAdapter) -> Result<()> {
     Ok(())
 }
 
+fn ensure_private_directory(path: &std::path::Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                anyhow::bail!(
+                    "refusing non-private Web directory path: {}",
+                    path.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(path)
+                .with_context(|| format!("failed to create Web directory {}", path.display()))?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect Web directory {}", path.display()));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 fn language_list(language: &str) -> String {
     let base = language.split('-').next().unwrap_or(language);
     if base == language {
@@ -117,8 +144,39 @@ fn sync_persistent_language(adapter: &WebAdapter, profile: &GeoProfile) -> Resul
     };
     let profile_root = std::path::Path::new(&adapter.profile_dir);
     update_chrome_language_preference(&profile_root.join("Local State"), language)?;
-    update_chrome_language_preference(&profile_root.join("Default").join("Preferences"), language)?;
+    let preferences = profile_root.join("Default").join("Preferences");
+    update_chrome_language_preference(&preferences, language)?;
     tracing::debug!(language, "Synchronized persistent Web language preference");
+    Ok(())
+}
+
+fn configure_persistent_privacy(path: &std::path::Path) -> Result<()> {
+    // Seed new profiles too. Flags alone did not prevent STUN srflx
+    // candidates on the tested macOS Chrome build.
+    if let Some(parent) = path.parent() {
+        ensure_private_directory(parent)?;
+    }
+    let mut value: serde_json::Value = if path.exists() {
+        serde_json::from_slice(&std::fs::read(path)?)
+            .with_context(|| format!("Invalid Chrome preference JSON: {}", path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+    value["webrtc"]["ip_handling_policy"] = "disable_non_proxied_udp".into();
+    value["webrtc"]["ip_handling_url"] = serde_json::json!([]);
+    value["credentials_enable_service"] = serde_json::Value::Bool(false);
+    value["profile"]["password_manager_enabled"] = serde_json::Value::Bool(false);
+    value["autofill"]["profile_enabled"] = serde_json::Value::Bool(false);
+    value["autofill"]["credit_card_enabled"] = serde_json::Value::Bool(false);
+
+    let temporary = path.with_extension("cim-privacy.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(&value)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(temporary, path)?;
     Ok(())
 }
 
@@ -215,7 +273,10 @@ fn browser_launch_args(
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         format!("--remote-debugging-port={debug_port}"),
-        "--remote-allow-origins=*".to_string(),
+        // CIM's CDP client does not send a browser Origin header. Avoid the
+        // wildcard origin mode so arbitrary local web content cannot request
+        // a websocket connection to this profile.
+        "--remote-allow-origins=http://127.0.0.1".to_string(),
     ];
     if let Some(language) = profile.language.as_deref() {
         args.push(format!("--lang={language}"));
@@ -230,6 +291,18 @@ fn browser_launch_args(
 
 #[async_trait]
 impl InstanceAdapter for WebAdapter {
+    fn set_request_log_sender(&mut self, sender: RequestLogSender) {
+        WebAdapter::set_request_log_sender(self, sender);
+    }
+
+    async fn cleanup_orphaned_sessions(&self) -> Result<()> {
+        WebAdapter::cleanup_orphaned_sessions(self).await
+    }
+
+    async fn open_auth_url(&self, url: &str) -> Result<()> {
+        WebAdapter::open_auth_url(self, url).await
+    }
+
     async fn detect(&self) -> CapabilityReport {
         // Try to find Chromium or Chrome
         let browsers = vec![
@@ -255,16 +328,15 @@ impl InstanceAdapter for WebAdapter {
     }
 
     async fn prepare(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.user_data_dir)?;
-        std::fs::create_dir_all(&self.profile_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.profile_dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+        ensure_private_directory(std::path::Path::new(&self.user_data_dir))?;
+        ensure_private_directory(std::path::Path::new(&self.profile_dir))?;
+        ensure_private_directory(&std::path::Path::new(&self.user_data_dir).join("sessions"))?;
         cleanup_orphaned_sessions(self).await?;
         migrate_legacy_profile(self)?;
         clear_profile_locks(self)?;
+        configure_persistent_privacy(
+            &std::path::Path::new(&self.profile_dir).join("Default/Preferences"),
+        )?;
         let profile = self.geo_profile.read().await.clone();
         sync_persistent_language(self, &profile)?;
         Ok(())
@@ -278,7 +350,7 @@ impl InstanceAdapter for WebAdapter {
         let profile = self.geo_profile.read().await.clone();
         let debug_port = find_free_port()?;
         let session_dir = format!("{}/sessions/{}", self.user_data_dir, Uuid::new_v4());
-        std::fs::create_dir_all(&session_dir)?;
+        ensure_private_directory(std::path::Path::new(&session_dir))?;
 
         if !profile.is_ready() {
             let _ = std::fs::remove_dir_all(&session_dir);
@@ -359,12 +431,17 @@ impl InstanceAdapter for WebAdapter {
         }
 
         self.sessions.lock().unwrap().insert(root_pid, session_dir);
+        self.debug_ports
+            .lock()
+            .unwrap()
+            .insert(root_pid, debug_port);
 
         Ok(ProcessHandle { root_pid })
     }
 
     async fn stop(&self, handle: &ProcessHandle) -> Result<()> {
         let session_dir = self.sessions.lock().unwrap().remove(&handle.root_pid);
+        self.debug_ports.lock().unwrap().remove(&handle.root_pid);
         terminate_web_processes(
             handle.root_pid,
             session_dir.as_deref(),
@@ -585,6 +662,50 @@ mod tests {
                 serde_json::Value::String("en-US,en".to_string())
             );
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persistent_preferences_disable_password_storage() {
+        let root = std::env::temp_dir().join(format!("cim-web-privacy-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create profile");
+        let preferences = root.join("Preferences");
+        fs::write(&preferences, br#"{"profile":{},"autofill":{}}"#).expect("write preferences");
+
+        super::configure_persistent_privacy(&preferences).expect("configure privacy");
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&preferences).expect("read preferences"))
+                .expect("parse preferences");
+        assert_eq!(value["credentials_enable_service"], false);
+        assert_eq!(value["profile"]["password_manager_enabled"], false);
+        assert_eq!(value["autofill"]["profile_enabled"], false);
+        assert_eq!(value["autofill"]["credit_card_enabled"], false);
+        assert_eq!(
+            value["webrtc"]["ip_handling_policy"],
+            "disable_non_proxied_udp"
+        );
+        assert_eq!(value["webrtc"]["ip_handling_url"], serde_json::json!([]));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_profile_gets_webrtc_policy_and_keeps_unrelated_preferences() {
+        let root = std::env::temp_dir().join(format!("cim-webrtc-{}", Uuid::new_v4()));
+        let preferences = root.join("Default/Preferences");
+        super::configure_persistent_privacy(&preferences).unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+        value["test_login_sentinel"] = "keep".into();
+        value["webrtc"]["ip_handling_policy"] = "default".into();
+        fs::write(&preferences, serde_json::to_vec(&value).unwrap()).unwrap();
+        super::configure_persistent_privacy(&preferences).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+        assert_eq!(value["test_login_sentinel"], "keep");
+        assert_eq!(
+            value["webrtc"]["ip_handling_policy"],
+            "disable_non_proxied_udp"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

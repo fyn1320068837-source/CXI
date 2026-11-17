@@ -29,6 +29,19 @@ cd ~/CXI
 
 脚本会重新构建并通过 launchd 重启守护进程，不需要每次再运行安装脚本或使用 `sudo`。当前命令入口是 `~/.cim/bin/cim`。
 
+### 编译空间
+
+开发和测试构建默认关闭调试信息与增量编译缓存（`Cargo.toml` 中的
+`[profile.dev]`，测试配置自动继承），普通 `cargo build`、`cargo check` 和
+`cargo test` 都会生效。已编译的依赖仍可复用，但修改源码后的重新编译可能
+稍慢；需要调试变量或源码行号时可临时使用 `CARGO_PROFILE_DEV_DEBUG=2 cargo build`。
+release 构建配置保持原样。
+
+这些设置减少编译产物，并不是 `target/` 的容量上限；更换依赖、工具链或编译
+参数仍可能留下旧产物。检查占用可运行 `du -sh target`。清理时必须保留
+`target/release/cim` 和 `target/release/cim-instance-launch`，因为已安装的服务
+入口指向这里；不要直接删除整个 `target/` 或运行无范围限制的 `cargo clean`。
+
 ### 查看和停止实例
 
 ```bash
@@ -164,6 +177,12 @@ IANA 时区和语言推荐。该配置只作用于 CIM 新启动的隔离实例�
 - VS Code：设置上述环境变量，并传入对应的 `--locale`
 - Web：设置上述环境变量、浏览器语言，并通过 Chrome DevTools 覆盖时区和 IP 定位
 - Desktop：Desktop Lite 注入 TZ/LANG/LC_ALL 并使用独立目录；CoreLocation 位置仍不支持可靠覆盖
+
+Desktop 的 Google OAuth 会由 Claude Electron 打开系统默认浏览器。推荐先运行
+`cim desktop-auth --watch`，再点击登录；CIM 会在 120 秒内自动发现 Edge/Chrome/Safari
+的认证页，并通过 CIM Web 的代理/PF 隔离打开认证标签页。首次运行需要允许终端控制对应
+浏览器。也可只复制一次完整 OAuth 地址栏 URL 后执行 `cim desktop-auth` 作为备用方式。
+CIM 不复制 Web Cookie 或 Keychain，也不修改系统默认浏览器；Desktop 登录凭据仍独立保存。
 
 GeoIP 查询失败时不会猜测位置：同一出口 IP 会暂时保留最近一次成功 profile，
 出口 IP 变化则清理旧 profile；控制台会显示当前已解析的出口 IP、地理位置、时区和语言/Locale。

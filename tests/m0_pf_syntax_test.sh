@@ -1,50 +1,27 @@
 #!/bin/bash
-# M0.2 PF 测试 - 简化版（不需要创建组）
-# 仅验证 PF 规则语法
+# Syntax-only verification; cimgrp must exist. No rules are loaded.
+set -euo pipefail
+umask 077
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-set -e
-
-echo "=== M0.2 PF 规则语法验证 ==="
-echo ""
-
-echo "步骤 1: 创建测试规则文件..."
-cat > /tmp/pf-test-block.conf << 'EOF'
-# 故障态：阻断指定组的全部出站协议
+rules_dir="$(/usr/bin/mktemp -d /private/tmp/cim-pf-syntax.XXXXXX)"
+trap '/bin/rm -rf "$rules_dir"' EXIT
+cat > "$rules_dir/block.conf" <<'EOF'
+# Retain incoming loopback control states; block instance-initiated traffic.
+pass in quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 group cimgrp flags S/SA keep state
 block return out quick from any to any group cimgrp
 EOF
-cat > /tmp/pf-test-allow.conf << 'EOF'
-# 正常态：只允许访问本地 CIM 代理端口，其他出站仍阻断
-pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp
-pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp
-pass out quick proto tcp from any to ::1 port 7890 group cimgrp
-pass out quick proto tcp from any to ::1 port 7891 group cimgrp
+cat > "$rules_dir/allow.conf" <<'EOF'
+# Incoming control states plus instance-initiated proxy connections only.
+pass in quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 group cimgrp flags S/SA keep state
+pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp flags any no state
+pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp flags any no state
+pass out quick proto tcp from any to ::1 port 7890 group cimgrp flags any no state
+pass out quick proto tcp from any to ::1 port 7891 group cimgrp flags any no state
 block return out quick from any to any group cimgrp
 EOF
 
-echo "✓ 规则文件已创建"
-cat /tmp/pf-test-block.conf
-cat /tmp/pf-test-allow.conf
-echo ""
-
-echo "步骤 2: 验证 PF 规则语法..."
-if pfctl -nf /tmp/pf-test-block.conf 2>&1 && pfctl -nf /tmp/pf-test-allow.conf 2>&1; then
-    echo ""
-    echo "✓ PF 规则语法正确"
-    echo ""
-    echo "=== 验证结果 ==="
-    echo "✅ PF 支持按组（group）过滤"
-    echo "✅ 规则语法符合 macOS PF 要求"
-    echo ""
-    echo "结论: M0.2 通过 - PF 技术可行"
-else
-    echo ""
-    echo "✗ PF 规则语法错误"
-    echo ""
-    echo "需要评估降级方案"
-fi
-
-rm /tmp/pf-test-block.conf /tmp/pf-test-allow.conf
-
-echo ""
-echo "注意: 完整测试需要 sudo 权限创建组并加载规则"
-echo "当前仅验证了语法，已足够证明技术可行性"
+/sbin/pfctl -n -a com.cim -f "$rules_dir/block.conf"
+/sbin/pfctl -n -a com.cim -f "$rules_dir/allow.conf"
+echo 'PASS: syntax only, including incoming control keep-state and proxy flags-any/no-state rules.'
+echo 'No live rules changed. PF enforcement and browser connectivity still require runtime tests.'

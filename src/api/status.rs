@@ -67,6 +67,9 @@ struct InstanceStatus {
 struct FirewallStatus {
     installed: bool,
     mode: String,
+    global_enabled: bool,
+    root_anchor_loaded: bool,
+    global_verified: bool,
     status: String,
     anchor: String,
     isolation_group: String,
@@ -86,9 +89,10 @@ async fn get_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<StatusResponse> {
     let manager = state.instance_manager.read().await;
-    let status_map = manager.status_all().await;
-    let pid_map = manager.pid_all().await;
-    let validation_map = manager.validation_all().await;
+    let snapshot = manager.snapshot_all().await;
+    let status_map = &snapshot.status;
+    let pid_map = &snapshot.pids;
+    let validation_map = &snapshot.validation;
     let geo_profile = state.geo_profile.read().await.clone();
     let firewall = state.proxy_manager.firewall_status();
     // Tunnel health and GeoIP readiness are separate signals. The proxy can
@@ -244,6 +248,9 @@ async fn get_status(
         firewall: FirewallStatus {
             installed: firewall.installed,
             mode: format!("{:?}", firewall.mode).to_lowercase(),
+            global_enabled: firewall.global_enabled,
+            root_anchor_loaded: firewall.root_anchor_loaded,
+            global_verified: firewall.global_enabled && firewall.root_anchor_loaded,
             status: firewall.status,
             anchor: firewall.anchor,
             isolation_group: firewall.isolation_group,

@@ -6,9 +6,10 @@
 // It is a network-hardened best-effort backend; CoreLocation remains outside
 // the guarantees of this adapter and is reported by the API layer as partial.
 use super::{
-    apply_locale_env, descendant_pids_checked, isolated_command, resolve_executable,
+    apply_instance_directories, apply_locale_env, apply_proxy_environment,
+    clear_instance_environment, descendant_pids_checked, isolated_command, resolve_executable,
     terminate_process_tree, terminate_processes, CapabilityReport, InstanceAdapter, ProcessHandle,
-    HTTP_PROXY_ENDPOINT, LOOPBACK_NO_PROXY, SOCKS_PROXY_ENDPOINT,
+    HTTP_PROXY_ENDPOINT,
 };
 use crate::geoip::SharedGeoProfile;
 use anyhow::{Context, Result};
@@ -80,35 +81,22 @@ fn configure_desktop_command(
     profile: &crate::geoip::GeoProfile,
 ) {
     let user_data_dir = format!("{profile_dir}/user-data");
-    let config_dir = format!("{profile_dir}/config");
-    let cache_dir = format!("{profile_dir}/cache");
-    let data_dir = format!("{profile_dir}/data");
-    let tmp_dir = format!("{profile_dir}/tmp");
     // macOS Keychain lookup follows the login user's HOME/search list. Keep
     // that host value so Claude can use its existing "Claude Key" item while
     // the application data and caches remain in the CIM profile.
     let host_home = std::env::var("HOME").unwrap_or_else(|_| profile_dir.to_string());
     let proxy_arg = format!("--proxy-server={HTTP_PROXY_ENDPOINT}");
 
-    command
-        // `isolated_command` may use `sudo -E`; clear the daemon's entire
-        // inherited environment before adding the small instance allowlist.
-        .env_clear()
-        .args([
-            &format!("--user-data-dir={user_data_dir}"),
-            &proxy_arg,
-            "--disable-quic",
-        ])
-        .env("PATH", DESKTOP_SAFE_PATH)
-        .env("HOME", host_home)
-        .env("TMPDIR", &tmp_dir)
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("XDG_CACHE_HOME", &cache_dir)
-        .env("XDG_DATA_HOME", &data_dir)
-        .env("HTTPS_PROXY", HTTP_PROXY_ENDPOINT)
-        .env("HTTP_PROXY", HTTP_PROXY_ENDPOINT)
-        .env("ALL_PROXY", SOCKS_PROXY_ENDPOINT)
-        .env("NO_PROXY", LOOPBACK_NO_PROXY);
+    // `isolated_command` may use `sudo -E`; clear the daemon's entire
+    // inherited environment before adding the small instance allowlist.
+    clear_instance_environment(command, DESKTOP_SAFE_PATH);
+    apply_instance_directories(command, profile_dir, &host_home);
+    apply_proxy_environment(command);
+    command.args([
+        &format!("--user-data-dir={user_data_dir}"),
+        &proxy_arg,
+        "--disable-quic",
+    ]);
     if let Some(language) = profile.language.as_deref() {
         command.arg(format!("--lang={language}"));
         let primary_language = language.split('-').next().unwrap_or(language);
@@ -184,6 +172,31 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn secure_private_tree(path: &Path) -> Result<()> {
+    ensure_private_directory(path)?;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let child = entry.path();
+        let metadata = fs::symlink_metadata(&child)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "refusing symlink in Desktop profile backup: {}",
+                child.display()
+            );
+        }
+        if metadata.is_dir() {
+            secure_private_tree(&child)?;
+        } else if metadata.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&child, fs::Permissions::from_mode(0o600))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reset only the Chromium local-storage database when Claude's own persisted
 /// SPA locale disagrees with the current GeoIP-derived language. Cookies,
 /// IndexedDB, and the rest of the Desktop profile remain in place. The old
@@ -244,6 +257,10 @@ fn migrate_persisted_locale(profile_dir: &str, expected_language: Option<&str>) 
             local_storage.display()
         )
     })?;
+    if let Err(error) = secure_private_tree(&backup) {
+        let _ = fs::rename(&backup, &local_storage);
+        return Err(error).context("secure Desktop locale backup");
+    }
     if let Err(error) = ensure_private_directory(&local_storage) {
         let _ = fs::rename(&backup, &local_storage);
         return Err(error);
@@ -405,6 +422,10 @@ async fn terminate_desktop_processes(root_pid: u32, profile_dir: &str) {
 
 #[async_trait]
 impl InstanceAdapter for DesktopAdapter {
+    async fn cleanup_orphaned_sessions(&self) -> Result<()> {
+        self.cleanup_orphaned_processes().await
+    }
+
     async fn detect(&self) -> CapabilityReport {
         let installed = Path::new(&self.app_path).is_dir();
         let executable = self.executable();
@@ -581,7 +602,7 @@ mod tests {
         );
         assert_eq!(
             env_value(&command, "ALL_PROXY").as_deref(),
-            Some("socks5://127.0.0.1:7891")
+            Some("socks5h://127.0.0.1:7891")
         );
         assert_eq!(
             env_value(&command, "TZ").as_deref(),

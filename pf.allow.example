@@ -1,8 +1,12 @@
 # PF 规则 - 正常态（仅允许通过本地 CIM 代理）
 # /etc/pf.anchors/com.cim.allow
 # 即使代理健康，实例也不能直接访问公网、局域网或宿主其他服务。
-pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp
-pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp
-pass out quick proto tcp from any to ::1 port 7890 group cimgrp
-pass out quick proto tcp from any to ::1 port 7891 group cimgrp
+# 宿主访问 cimgrp 的回环监听端口时建立入站 state，允许 CDP 回包。
+# cimgrp 主动连接先经过出站阻断，不会借此获得宿主访问权限。
+# 代理数据不建 state，每包重新检查规则；故障切换不依赖清空全局状态表。
+pass in quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 group cimgrp flags S/SA keep state
+pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp flags any no state
+pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp flags any no state
+pass out quick proto tcp from any to ::1 port 7890 group cimgrp flags any no state
+pass out quick proto tcp from any to ::1 port 7891 group cimgrp flags any no state
 block return out quick from any to any group cimgrp

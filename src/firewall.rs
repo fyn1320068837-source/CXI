@@ -14,19 +14,24 @@ use tracing::{info, warn};
 
 const BLOCK_RULES: &str = r#"# CIM fail-closed rules.
 # Instances are launched with the cimgrp effective group.
-# A blocked instance cannot reach the host, LAN or internet, including
-# non-TCP/UDP protocols. The proxy loopback ports are also closed while
-# the upstream proxy is unhealthy.
+# Local host requests reaching a cimgrp listener create reply state (Chrome CDP).
+# Instance-originated SYN packets are blocked on output before this input rule.
+# Instance-initiated connections, including the proxy ports, remain blocked.
+pass in quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 group cimgrp flags S/SA keep state
 block return out quick from any to any group cimgrp
 "#;
 
 const ALLOW_RULES_TEMPLATE: &str = r#"# CIM healthy-state rules.
 # Direct egress remains blocked even while the upstream proxy is healthy.
-# The only permitted destination is the local CIM HTTP/SOCKS gateway.
-pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp
-pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp
-pass out quick proto tcp from any to ::1 port 7890 group cimgrp
-pass out quick proto tcp from any to ::1 port 7891 group cimgrp
+# Host-initiated loopback control connections retain state for instance replies.
+# Instances may initiate connections only to the local HTTP/SOCKS gateway.
+# Proxy traffic is stateless so a block transition applies to the next packet
+# of existing connections without flushing unrelated host connection states.
+pass in quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 group cimgrp flags S/SA keep state
+pass out quick proto tcp from any to 127.0.0.1 port 7890 group cimgrp flags any no state
+pass out quick proto tcp from any to 127.0.0.1 port 7891 group cimgrp flags any no state
+pass out quick proto tcp from any to ::1 port 7890 group cimgrp flags any no state
+pass out quick proto tcp from any to ::1 port 7891 group cimgrp flags any no state
 block return out quick from any to any group cimgrp
 "#;
 
@@ -41,6 +46,8 @@ pub enum FirewallMode {
 #[derive(Debug, Clone, Serialize)]
 pub struct FirewallStatus {
     pub installed: bool,
+    pub global_enabled: bool,
+    pub root_anchor_loaded: bool,
     pub mode: FirewallMode,
     pub status: String,
     pub anchor: String,
@@ -51,17 +58,21 @@ pub struct FirewallStatus {
 #[derive(Debug)]
 struct FirewallState {
     installed: bool,
+    global_enabled: bool,
+    root_anchor_loaded: bool,
     mode: FirewallMode,
     last_error: Option<String>,
 }
 
-/// Controls only the CIM anchor. It never enables/disables the system PF
-/// engine and never changes the host's default route.
+/// Controls the CIM anchor and verifies that the global PF engine evaluates
+/// it. A disabled engine is enabled only after restrictive rules are loaded;
+/// the controller never disables PF or changes the host's default route.
 pub struct FirewallController {
     config: FirewallConfig,
     block_rules_path: PathBuf,
     allow_rules_path: PathBuf,
     state: Arc<Mutex<FirewallState>>,
+    transition_lock: Mutex<()>,
 }
 
 impl FirewallController {
@@ -87,8 +98,11 @@ impl FirewallController {
             config,
             block_rules_path,
             allow_rules_path,
+            transition_lock: Mutex::new(()),
             state: Arc::new(Mutex::new(FirewallState {
                 installed,
+                global_enabled: false,
+                root_anchor_loaded: false,
                 // Presence of the anchor and rule files only proves that the
                 // controller can attempt a transition.  Do not claim an
                 // allowed/blocked policy until pfctl has returned and the
@@ -103,6 +117,8 @@ impl FirewallController {
         let state = self.state.lock().unwrap();
         FirewallStatus {
             installed: state.installed,
+            global_enabled: state.global_enabled,
+            root_anchor_loaded: state.root_anchor_loaded,
             mode: state.mode,
             status: match state.mode {
                 FirewallMode::Unavailable => {
@@ -129,67 +145,135 @@ impl FirewallController {
         &self.allow_rules_path
     }
 
-    /// Load the block rules into the CIM anchor. If PF is not installed or
-    /// the anchor cannot be controlled, this is recorded as soft isolation and
-    /// the caller continues to enforce the process/API health gate.
+    /// Load the block rules into the CIM anchor. A missing installation or
+    /// failed transition is an error; callers must not treat it as a
+    /// fail-closed success.
     pub fn set_blocked(&self) -> Result<()> {
+        self.transition(FirewallMode::Blocked)
+    }
+
+    /// Allow only the local proxy after verifying the global engine and the
+    /// root ruleset. Unrelated anchors are never changed.
+    pub fn set_allowed(&self) -> Result<()> {
+        self.transition(FirewallMode::Allowed)
+    }
+
+    fn transition(&self, mode: FirewallMode) -> Result<()> {
         if !self.is_ready() {
-            return Ok(());
+            let _transition = self.transition_lock.lock().unwrap();
+            return self.record_error("PF fail-closed rules are not installed".to_string());
         }
-        let output = match run_privileged(&[
-            "pfctl",
-            "-a",
-            &self.config.anchor_name,
-            "-f",
-            self.block_rules_path.to_string_lossy().as_ref(),
-        ]) {
-            Ok(output) => output,
-            Err(error) => return self.record_error(format!("load PF block rules: {error}")),
-        };
-        if !output.status.success() {
-            return self.record_error(format_command_error("load PF block rules", &output));
+        let group_id = resolve_group_id(&self.config.isolation_group);
+        self.transition_with(mode, group_id.as_deref(), run_privileged)
+    }
+
+    fn transition_with(
+        &self,
+        mode: FirewallMode,
+        group_id: Option<&str>,
+        mut run: impl FnMut(&[&str]) -> Result<Output>,
+    ) -> Result<()> {
+        // Health checks and fault handling may run concurrently. Keep each
+        // read/load/verify sequence atomic with respect to other transitions,
+        // while status readers retain the last verified policy. A routine
+        // health check must not briefly advertise Unavailable to the watchdog.
+        let _transition = self.transition_lock.lock().unwrap();
+        if mode == FirewallMode::Unavailable {
+            return self.record_error("cannot transition to an unavailable PF policy".to_string());
         }
-        // Drop states created under the previous healthy anchor. Otherwise a
-        // connection that was already established could survive the rule
-        // transition until its normal timeout.
-        match run_privileged(&["pfctl", "-a", &self.config.anchor_name, "-F", "states"]) {
-            Ok(states) if states.status.success() => {}
-            Ok(states) => {
-                return self.record_error(format_command_error("flush PF states", &states));
+        let result = (|| {
+            if mode == FirewallMode::Blocked {
+                self.load_policy(mode, group_id, &mut run)?;
             }
-            Err(error) => return self.record_error(format!("flush PF states: {error}")),
+            let info = checked_pf_command(&mut run, &["pfctl", "-s", "info"], "inspect PF engine")?;
+            let was_enabled = parse_global_enabled(&info)?;
+            if !was_enabled {
+                // This is an observed loss of protection, not an in-progress
+                // check. Invalidate immediately while recovery is attempted.
+                self.update_state(true, FirewallMode::Unavailable, None);
+            }
+            let rules =
+                checked_pf_command(&mut run, &["pfctl", "-s", "rules"], "inspect PF root rules")?;
+            if !root_anchor_matches(&rules, &self.config.anchor_name) {
+                anyhow::bail!(
+                    "PF root rules do not safely reference anchor {} in both directions",
+                    self.config.anchor_name
+                );
+            }
+            if !was_enabled {
+                // Loading an anchor while PF is disabled does not enforce it.
+                // Install and verify the block policy before enabling PF, then
+                // require an independent readback before allowing any traffic.
+                if mode != FirewallMode::Blocked {
+                    self.load_policy(FirewallMode::Blocked, group_id, &mut run)?;
+                }
+                checked_pf_command(&mut run, &["pfctl", "-e"], "enable PF engine")?;
+                let info = checked_pf_command(
+                    &mut run,
+                    &["pfctl", "-s", "info"],
+                    "verify PF engine enabled",
+                )?;
+                if !parse_global_enabled(&info)? {
+                    anyhow::bail!("PF engine remains disabled after enable request");
+                }
+            }
+            // Proxy allow rules use no state: every instance data packet is
+            // filtered again after switching to blocked. Never invoke -F
+            // states here; macOS does not provide an anchor-scoped guarantee
+            // for that operation. Host-initiated local control state remains.
+            if mode == FirewallMode::Allowed {
+                self.load_policy(mode, group_id, &mut run)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return self.record_error(format!("verify PF enforcement: {error}"));
         }
-        self.verify_live_rules(FirewallMode::Blocked)?;
-        self.update_state(true, FirewallMode::Blocked, None);
-        info!(anchor = %self.config.anchor_name, "PF fail-closed rules enabled");
+        {
+            let mut state = self.state.lock().unwrap();
+            state.global_enabled = true;
+            state.root_anchor_loaded = true;
+            state.mode = mode;
+            state.last_error = None;
+        }
+        info!(anchor = %self.config.anchor_name, ?mode, "PF global engine and anchor enforcement verified");
         Ok(())
     }
 
-    /// Clear only the CIM anchor rules. The global PF engine and unrelated
-    /// anchors are left untouched.
-    pub fn set_allowed(&self) -> Result<()> {
-        if !self.is_ready() {
-            return Ok(());
-        }
-        // Keep a restrictive anchor loaded in healthy state. Clearing the
-        // anchor would leave a crash/restart window in which instances could
-        // connect directly before the daemon re-applies the block rules.
-        let output = match run_privileged(&[
-            "pfctl",
-            "-a",
-            &self.config.anchor_name,
-            "-f",
-            self.allow_rules_path.to_string_lossy().as_ref(),
-        ]) {
-            Ok(output) => output,
-            Err(error) => return self.record_error(format!("load PF allow rules: {error}")),
+    fn load_policy(
+        &self,
+        mode: FirewallMode,
+        group_id: Option<&str>,
+        run: &mut impl FnMut(&[&str]) -> Result<Output>,
+    ) -> Result<()> {
+        let path = match mode {
+            FirewallMode::Blocked => &self.block_rules_path,
+            FirewallMode::Allowed => &self.allow_rules_path,
+            FirewallMode::Unavailable => anyhow::bail!("cannot load an unavailable PF policy"),
         };
-        if !output.status.success() {
-            return self.record_error(format_command_error("load PF allow rules", &output));
+        checked_pf_command(
+            run,
+            &[
+                "pfctl",
+                "-a",
+                &self.config.anchor_name,
+                "-f",
+                path.to_string_lossy().as_ref(),
+            ],
+            "load PF policy",
+        )?;
+        let rules = checked_pf_command(
+            run,
+            &["pfctl", "-a", &self.config.anchor_name, "-s", "rules"],
+            "inspect live PF rules",
+        )?;
+        if !live_rules_match(mode, &rules, &self.config.isolation_group, group_id) {
+            anyhow::bail!(
+                "live PF rules do not match expected {:?} policy for anchor {}",
+                mode,
+                self.config.anchor_name
+            );
         }
-        self.verify_live_rules(FirewallMode::Allowed)?;
-        self.update_state(true, FirewallMode::Allowed, None);
-        info!(anchor = %self.config.anchor_name, "PF fail-closed rules switched to proxy-only allow state");
         Ok(())
     }
 
@@ -328,6 +412,10 @@ impl FirewallController {
         state.installed = installed;
         state.mode = mode;
         state.last_error = error;
+        if mode == FirewallMode::Unavailable {
+            state.global_enabled = false;
+            state.root_anchor_loaded = false;
+        }
     }
 
     fn record_error<T>(&self, message: String) -> Result<T> {
@@ -337,34 +425,11 @@ impl FirewallController {
         // explicitly unknown so API consumers cannot treat stale state as
         // fail-closed evidence.
         state.mode = FirewallMode::Unavailable;
+        state.global_enabled = false;
+        state.root_anchor_loaded = false;
         state.last_error = Some(message.clone());
         warn!("{}", message);
         Err(anyhow::anyhow!(message))
-    }
-
-    fn verify_live_rules(&self, expected: FirewallMode) -> Result<()> {
-        let output = match run_privileged(&["pfctl", "-a", &self.config.anchor_name, "-s", "rules"])
-        {
-            Ok(output) => output,
-            Err(error) => return self.record_error(format!("inspect live PF rules: {error}")),
-        };
-        if !output.status.success() {
-            return self.record_error(format_command_error("inspect live PF rules", &output));
-        }
-        let rules = String::from_utf8_lossy(&output.stdout);
-        let group_id = resolve_group_id(&self.config.isolation_group);
-        if !live_rules_match(
-            expected,
-            &rules,
-            &self.config.isolation_group,
-            group_id.as_deref(),
-        ) {
-            return self.record_error(format!(
-                "live PF rules do not match expected {:?} policy for anchor {}",
-                expected, self.config.anchor_name
-            ));
-        }
-        Ok(())
     }
 
     fn probe_anchor(anchor: &str) -> bool {
@@ -410,62 +475,127 @@ fn format_command_error(action: &str, output: &Output) -> String {
     }
 }
 
+fn checked_pf_command(
+    run: &mut impl FnMut(&[&str]) -> Result<Output>,
+    args: &[&str],
+    action: &str,
+) -> Result<String> {
+    let output = run(args).with_context(|| action.to_string())?;
+    if !output.status.success() {
+        anyhow::bail!(format_command_error(action, &output));
+    }
+    String::from_utf8(output.stdout).with_context(|| format!("{action}: invalid UTF-8 output"))
+}
+
+fn parse_global_enabled(info: &str) -> Result<bool> {
+    let statuses = info
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Status:"))
+        .map(|value| value.split_whitespace().next())
+        .collect::<Vec<_>>();
+    match statuses.as_slice() {
+        [Some("Enabled")] => Ok(true),
+        [Some("Disabled")] => Ok(false),
+        _ => anyhow::bail!("PF engine status is missing or unrecognized"),
+    }
+}
+
+fn root_anchor_matches(rules: &str, anchor: &str) -> bool {
+    for line in rules.lines() {
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        if tokens.first() == Some(&"anchor")
+            && tokens.get(1).map(|value| value.trim_matches('"')) == Some(anchor)
+        {
+            // Both directions must reach CIM: input creates state for host
+            // control requests, output restricts instance-originated traffic.
+            // Reject protocol/interface/address restrictions and child anchors.
+            return matches!(&tokens[2..], ["all"] | ["quick", "all"]);
+        }
+        // A preceding terminal pass (or terminal anchor) can skip CIM. Be
+        // conservative even if its address/group restriction looks harmless.
+        // Non-quick system anchors remain supported; their nested policies
+        // are outside this root-rules check and still require active probes.
+        if matches!(tokens.first(), Some(&"pass") | Some(&"anchor")) && tokens.contains(&"quick") {
+            return false;
+        }
+    }
+    false
+}
+
 fn live_rules_match(mode: FirewallMode, rules: &str, group: &str, group_id: Option<&str>) -> bool {
-    let has_block = rules.lines().any(|line| {
-        let tokens = line.split_whitespace().collect::<Vec<_>>();
-        tokens.starts_with(&["block", "return", "out", "quick"])
-            && (tokens.contains(&"all")
-                || tokens
-                    .windows(4)
-                    .any(|window| window == ["from", "any", "to", "any"]))
-            && line_group_matches(&tokens, group, group_id)
-    });
-    let has_http = rules
+    // Match the complete ordered whitelist, not just the presence of required
+    // lines. Extra ungrouped/negated pass rules or a premature quick block must
+    // not be reported as the configured policy.
+    let lines = rules
         .lines()
-        .any(|line| line_has_proxy_rule(line, "127.0.0.1", "7890", group, group_id));
-    let has_socks = rules
-        .lines()
-        .any(|line| line_has_proxy_rule(line, "127.0.0.1", "7891", group, group_id));
-    let has_http6 = rules
-        .lines()
-        .any(|line| line_has_proxy_rule(line, "::1", "7890", group, group_id));
-    let has_socks6 = rules
-        .lines()
-        .any(|line| line_has_proxy_rule(line, "::1", "7891", group, group_id));
-    let has_pass = rules.lines().any(|line| {
-        let tokens = line.split_whitespace().collect::<Vec<_>>();
-        tokens.first() == Some(&"pass") && line_group_matches(&tokens, group, group_id)
-    });
-    let has_unsafe_pass = rules.lines().any(|line| {
-        let tokens = line.split_whitespace().collect::<Vec<_>>();
-        tokens.first() == Some(&"pass")
-            && line_group_matches(&tokens, group, group_id)
-            && !["127.0.0.1", "::1"].iter().any(|host| {
-                ["7890", "7891"]
-                    .iter()
-                    .any(|port| line_has_proxy_rule(line, host, port, group, group_id))
-            })
-    });
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
     match mode {
-        FirewallMode::Blocked => has_block && !has_pass,
+        FirewallMode::Blocked => {
+            lines.len() == 2
+                && line_has_host_control_rule(lines[0], group, group_id)
+                && line_has_block_rule(lines[1], group, group_id)
+        }
         FirewallMode::Allowed => {
-            has_block && has_http && has_socks && has_http6 && has_socks6 && !has_unsafe_pass
+            lines.len() == 6
+                && line_has_host_control_rule(lines[0], group, group_id)
+                && line_has_proxy_rule(lines[1], "127.0.0.1", "7890", group, group_id)
+                && line_has_proxy_rule(lines[2], "127.0.0.1", "7891", group, group_id)
+                && line_has_proxy_rule(lines[3], "::1", "7890", group, group_id)
+                && line_has_proxy_rule(lines[4], "::1", "7891", group, group_id)
+                && line_has_block_rule(lines[5], group, group_id)
         }
         FirewallMode::Unavailable => false,
     }
 }
 
-fn line_group_matches(tokens: &[&str], group: &str, group_id: Option<&str>) -> bool {
-    tokens.windows(2).any(|window| {
-        if window[0] != "group" {
-            return false;
-        }
-        window[1] == group
-            || (window[1] == "="
-                && tokens.windows(3).any(|triple| {
-                    triple[0] == "group" && triple[1] == "=" && group_id == Some(triple[2])
-                }))
-    })
+fn group_clause_matches(tokens: &[&str], group: &str, group_id: Option<&str>) -> bool {
+    let name = match tokens {
+        ["group", name] | ["group", "=", name] => *name,
+        _ => return false,
+    };
+    name == group || group_id == Some(name)
+}
+
+fn line_has_host_control_rule(line: &str, group: &str, group_id: Option<&str>) -> bool {
+    let tokens = line.split_whitespace().collect::<Vec<_>>();
+    let Some(tail) = tokens.strip_prefix(&[
+        "pass",
+        "in",
+        "quick",
+        "on",
+        "lo0",
+        "inet",
+        "proto",
+        "tcp",
+        "from",
+        "127.0.0.1",
+        "to",
+        "127.0.0.1",
+    ]) else {
+        return false;
+    };
+    // pfctl may omit the default keep-state suffix. Explicit no-state or
+    // broader flags must remain a mismatch.
+    let Some(clause) = tail
+        .strip_suffix(&["flags", "S/SA", "keep", "state"])
+        .or_else(|| tail.strip_suffix(&["flags", "S/SA"]))
+    else {
+        return false;
+    };
+    group_clause_matches(clause, group, group_id)
+}
+
+fn line_has_block_rule(line: &str, group: &str, group_id: Option<&str>) -> bool {
+    let tokens = line.split_whitespace().collect::<Vec<_>>();
+    let Some(tail) = tokens.strip_prefix(&["block", "return", "out", "quick"]) else {
+        return false;
+    };
+    let clause = tail
+        .strip_prefix(&["all"])
+        .or_else(|| tail.strip_prefix(&["from", "any", "to", "any"]));
+    clause.is_some_and(|clause| group_clause_matches(clause, group, group_id))
 }
 
 fn line_has_proxy_rule(
@@ -476,21 +606,33 @@ fn line_has_proxy_rule(
     group_id: Option<&str>,
 ) -> bool {
     let tokens = line.split_whitespace().collect::<Vec<_>>();
-    tokens.first() == Some(&"pass")
-        && tokens.windows(2).any(|window| window == ["pass", "out"])
-        && tokens.windows(2).any(|window| window == ["out", "quick"])
-        && tokens.windows(2).any(|window| window == ["proto", "tcp"])
-        && tokens.windows(2).any(|window| window == ["from", "any"])
-        && tokens.windows(2).any(|window| window == ["to", host])
-        && tokens.windows(2).any(|window| {
-            window[0] == "port"
-                && (window[1] == port
-                    || (window[1] == "="
-                        && tokens.windows(3).any(|triple| {
-                            triple[0] == "port" && triple[1] == "=" && triple[2] == port
-                        })))
-        })
-        && line_group_matches(&tokens, group, group_id)
+    let Some(mut tail) = tokens.strip_prefix(&["pass", "out", "quick"]) else {
+        return false;
+    };
+    if matches!(tail.first(), Some(&"inet") | Some(&"inet6")) {
+        let expected_family = if host == "::1" { "inet6" } else { "inet" };
+        if tail[0] != expected_family {
+            return false;
+        }
+        tail = &tail[1..];
+    }
+    let Some(tail) = tail.strip_prefix(&["proto", "tcp", "from", "any", "to", host, "port"]) else {
+        return false;
+    };
+    let tail = tail.strip_prefix(&["="]).unwrap_or(tail);
+    let Some(tail) = tail.strip_prefix(&[port]) else {
+        return false;
+    };
+    // Explicit no-state is mandatory. Otherwise an existing proxy state could
+    // bypass a later block policy. With no-state, omitted flags means all TCP
+    // packets; pfctl may therefore omit the redundant `flags any` spelling.
+    let Some(clause) = tail
+        .strip_suffix(&["flags", "any", "no", "state"])
+        .or_else(|| tail.strip_suffix(&["no", "state"]))
+    else {
+        return false;
+    };
+    group_clause_matches(clause, group, group_id)
 }
 
 fn resolve_group_id(group: &str) -> Option<String> {
@@ -535,7 +677,299 @@ fn resolve_group_id(group: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{live_rules_match, FirewallMode, ALLOW_RULES_TEMPLATE, BLOCK_RULES};
+    use super::{
+        live_rules_match, parse_global_enabled, root_anchor_matches, FirewallController,
+        FirewallMode, FirewallState, FirewallStatus, ALLOW_RULES_TEMPLATE, BLOCK_RULES,
+    };
+    use crate::config::FirewallConfig;
+    use std::collections::VecDeque;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+    use std::sync::{Arc, Mutex};
+
+    const ROOT_RULES: &str = "anchor \"com.apple/*\" all\nanchor \"com.cim\" all";
+
+    fn test_controller() -> FirewallController {
+        FirewallController {
+            config: FirewallConfig {
+                anchor_name: "com.cim".to_string(),
+                rules_path: "/tmp/cim-pf-test".to_string(),
+                isolation_group: "cimgrp".to_string(),
+            },
+            block_rules_path: "/tmp/cim-pf-test.block".into(),
+            allow_rules_path: "/tmp/cim-pf-test.allow".into(),
+            transition_lock: Mutex::new(()),
+            // Start with stale success to ensure failures invalidate it.
+            state: Arc::new(Mutex::new(FirewallState {
+                installed: true,
+                global_enabled: true,
+                root_anchor_loaded: true,
+                mode: FirewallMode::Allowed,
+                last_error: None,
+            })),
+        }
+    }
+
+    fn successful_output(text: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(0),
+            stdout: text.as_bytes().to_vec(),
+            stderr: vec![],
+        }
+    }
+
+    fn simulate_transition(
+        mode: FirewallMode,
+        steps: &[(&str, bool, &str)],
+    ) -> (anyhow::Result<()>, FirewallStatus) {
+        let controller = test_controller();
+        let mut steps = VecDeque::from(steps.to_vec());
+        let result = controller.transition_with(mode, Some("501"), |args| {
+            let (command, success, text) = steps.pop_front().expect("unexpected PF command");
+            assert_eq!(args.join(" "), command);
+            Ok(Output {
+                status: ExitStatus::from_raw(if success { 0 } else { 256 }),
+                stdout: if success {
+                    text.as_bytes().to_vec()
+                } else {
+                    vec![]
+                },
+                stderr: if success {
+                    vec![]
+                } else {
+                    text.as_bytes().to_vec()
+                },
+            })
+        });
+        assert!(
+            steps.is_empty(),
+            "unexecuted expected PF commands: {steps:?}"
+        );
+        (result, controller.status())
+    }
+
+    #[test]
+    fn global_status_requires_exact_known_status() {
+        assert!(parse_global_enabled("Status: Enabled for 0 days\nDebug: Urgent").unwrap());
+        assert!(!parse_global_enabled("Status: Disabled\nDebug: Urgent").unwrap());
+        for invalid in [
+            "",
+            "Status: Unknown",
+            "Status: NotEnabled",
+            "Status: Enabled\nStatus: Disabled",
+        ] {
+            assert!(parse_global_enabled(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn root_rules_require_both_directions_without_prior_quick_pass() {
+        assert!(root_anchor_matches(ROOT_RULES, "com.cim"));
+        assert!(root_anchor_matches(
+            "anchor \"com.cim\" quick all",
+            "com.cim"
+        ));
+        for invalid in [
+            "",
+            "anchor \"com.cim.other\" all",
+            "anchor \"com.cim/*\" all",
+            "anchor \"com.cim\" in all",
+            "anchor \"com.cim\" out all",
+            "anchor \"com.cim\" out quick all",
+            "anchor \"com.cim\" out proto tcp all",
+            "anchor \"com.cim\" out on en0 all",
+            "pass out quick all\nanchor \"com.cim\" all",
+            "pass quick all\nanchor \"com.cim\" all",
+            "pass in quick all\nanchor \"com.cim\" all",
+            "anchor \"other\" quick all\nanchor \"com.cim\" all",
+        ] {
+            assert!(!root_anchor_matches(invalid, "com.cim"), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn allowed_transition_verifies_global_and_anchor_without_disrupting_states() {
+        let (result, state) = simulate_transition(
+            FirewallMode::Allowed,
+            &[
+                ("pfctl -s info", true, "Status: Enabled"),
+                ("pfctl -s rules", true, ROOT_RULES),
+                ("pfctl -a com.cim -f /tmp/cim-pf-test.allow", true, ""),
+                ("pfctl -a com.cim -s rules", true, ALLOW_RULES_TEMPLATE),
+            ],
+        );
+        result.unwrap();
+        assert_eq!(state.mode, FirewallMode::Allowed);
+        assert!(state.global_enabled && state.root_anchor_loaded);
+    }
+
+    #[test]
+    fn healthy_recheck_preserves_last_verified_state_for_watchdog() {
+        let controller = test_controller();
+        controller.state.lock().unwrap().last_error = Some("previous failure".into());
+        controller
+            .transition_with(FirewallMode::Allowed, Some("501"), |args| {
+                let state = controller.status();
+                assert_eq!(state.mode, FirewallMode::Allowed);
+                assert!(state.global_enabled && state.root_anchor_loaded);
+                assert!(controller.transition_lock.try_lock().is_err());
+                Ok(successful_output(match args {
+                    ["pfctl", "-s", "info"] => "Status: Enabled",
+                    ["pfctl", "-s", "rules"] => ROOT_RULES,
+                    ["pfctl", "-a", "com.cim", "-s", "rules"] => ALLOW_RULES_TEMPLATE,
+                    _ => "",
+                }))
+            })
+            .unwrap();
+        assert!(controller.status().last_error.is_none());
+        assert!(controller.transition_lock.try_lock().is_ok());
+    }
+
+    #[test]
+    fn disabled_engine_invalidates_evidence_before_recovery_commands() {
+        let controller = test_controller();
+        let mut first = true;
+        let result = controller.transition_with(FirewallMode::Allowed, Some("501"), |args| {
+            if first {
+                first = false;
+                assert_eq!(args, ["pfctl", "-s", "info"]);
+                return Ok(successful_output("Status: Disabled"));
+            }
+            assert_eq!(args, ["pfctl", "-s", "rules"]);
+            let state = controller.status();
+            assert_eq!(state.mode, FirewallMode::Unavailable);
+            assert!(!state.global_enabled && !state.root_anchor_loaded);
+            anyhow::bail!("injected root rules read failure")
+        });
+        assert!(result.is_err());
+        assert_eq!(controller.status().mode, FirewallMode::Unavailable);
+    }
+
+    #[test]
+    fn concurrent_allowed_and_blocked_transitions_do_not_interleave() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let controller = Arc::new(test_controller());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let allowed_controller = Arc::clone(&controller);
+        let allowed = std::thread::spawn(move || {
+            let mut first = true;
+            allowed_controller.transition_with(FirewallMode::Allowed, Some("501"), |args| {
+                if first {
+                    first = false;
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                }
+                Ok(successful_output(match args {
+                    ["pfctl", "-s", "info"] => "Status: Enabled",
+                    ["pfctl", "-s", "rules"] => ROOT_RULES,
+                    ["pfctl", "-a", "com.cim", "-s", "rules"] => ALLOW_RULES_TEMPLATE,
+                    _ => "",
+                }))
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (blocked_enter_tx, blocked_enter_rx) = mpsc::channel();
+        let blocked_controller = Arc::clone(&controller);
+        let blocked = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let mut first = true;
+            blocked_controller.transition_with(FirewallMode::Blocked, Some("501"), |args| {
+                if first {
+                    first = false;
+                    blocked_enter_tx.send(()).unwrap();
+                }
+                Ok(successful_output(match args {
+                    ["pfctl", "-s", "info"] => "Status: Enabled",
+                    ["pfctl", "-s", "rules"] => ROOT_RULES,
+                    ["pfctl", "-a", "com.cim", "-s", "rules"] => BLOCK_RULES,
+                    _ => "",
+                }))
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let before_release = blocked_enter_rx.recv_timeout(Duration::from_millis(50));
+        release_tx.send(()).unwrap();
+        allowed.join().unwrap().unwrap();
+        blocked.join().unwrap().unwrap();
+        assert!(matches!(
+            before_release,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(controller.status().mode, FirewallMode::Blocked);
+        assert!(controller.status().global_enabled && controller.status().root_anchor_loaded);
+    }
+
+    #[test]
+    fn disabled_engine_is_blocked_before_enable_and_verified_before_allow() {
+        let (result, state) = simulate_transition(
+            FirewallMode::Allowed,
+            &[
+                ("pfctl -s info", true, "Status: Disabled"),
+                ("pfctl -s rules", true, ROOT_RULES),
+                ("pfctl -a com.cim -f /tmp/cim-pf-test.block", true, ""),
+                ("pfctl -a com.cim -s rules", true, BLOCK_RULES),
+                ("pfctl -e", true, ""),
+                ("pfctl -s info", true, "Status: Enabled"),
+                ("pfctl -a com.cim -f /tmp/cim-pf-test.allow", true, ""),
+                ("pfctl -a com.cim -s rules", true, ALLOW_RULES_TEMPLATE),
+            ],
+        );
+        result.unwrap();
+        assert_eq!(state.mode, FirewallMode::Allowed);
+        assert!(state.global_enabled && state.root_anchor_loaded);
+    }
+
+    #[test]
+    fn blocked_transition_verifies_policy_without_flushing_host_states() {
+        let (result, state) = simulate_transition(
+            FirewallMode::Blocked,
+            &[
+                ("pfctl -a com.cim -f /tmp/cim-pf-test.block", true, ""),
+                ("pfctl -a com.cim -s rules", true, BLOCK_RULES),
+                ("pfctl -s info", true, "Status: Enabled"),
+                ("pfctl -s rules", true, ROOT_RULES),
+            ],
+        );
+        result.unwrap();
+        assert_eq!(state.mode, FirewallMode::Blocked);
+        assert!(state.global_enabled && state.root_anchor_loaded);
+    }
+
+    #[test]
+    fn failed_global_verification_never_retains_enforced_state() {
+        let cases: Vec<Vec<(&str, bool, &str)>> = vec![
+            vec![("pfctl -s info", false, "sudo: a password is required")],
+            vec![("pfctl -s info", true, "unexpected output")],
+            vec![
+                ("pfctl -s info", true, "Status: Enabled"),
+                ("pfctl -s rules", false, "denied"),
+            ],
+            vec![
+                ("pfctl -s info", true, "Status: Enabled"),
+                ("pfctl -s rules", true, "anchor \"com.apple/*\" all"),
+            ],
+            vec![
+                ("pfctl -s info", true, "Status: Disabled"),
+                ("pfctl -s rules", true, ROOT_RULES),
+                ("pfctl -a com.cim -f /tmp/cim-pf-test.block", true, ""),
+                ("pfctl -a com.cim -s rules", true, BLOCK_RULES),
+                ("pfctl -e", true, ""),
+                ("pfctl -s info", true, "Status: Disabled"),
+            ],
+        ];
+        for steps in cases {
+            let (result, state) = simulate_transition(FirewallMode::Allowed, &steps);
+            assert!(result.is_err());
+            assert_eq!(state.mode, FirewallMode::Unavailable);
+            assert!(!state.global_enabled && !state.root_anchor_loaded);
+            assert!(state.last_error.is_some());
+        }
+    }
 
     #[test]
     fn healthy_rules_keep_direct_egress_blocked() {
@@ -547,13 +981,27 @@ mod tests {
             ALLOW_RULES_TEMPLATE.contains("block return out quick from any to any group cimgrp")
         );
         assert!(!ALLOW_RULES_TEMPLATE.contains("127.0.0.0/8"));
+        assert_eq!(
+            ALLOW_RULES_TEMPLATE.matches("flags any no state").count(),
+            4
+        );
     }
 
     #[test]
     fn blocked_rules_cover_all_ip_protocols() {
-        assert!(BLOCK_RULES.contains("block return out quick from any to any group cimgrp"));
-        assert!(!BLOCK_RULES.contains("proto tcp"));
-        assert!(!BLOCK_RULES.contains("proto udp"));
+        let block = BLOCK_RULES
+            .lines()
+            .find(|line| line.starts_with("block"))
+            .unwrap();
+        assert_eq!(block, "block return out quick from any to any group cimgrp");
+        assert!(!block.contains("proto"));
+        assert_eq!(
+            BLOCK_RULES
+                .lines()
+                .filter(|line| line.starts_with("pass"))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -596,7 +1044,7 @@ mod tests {
             "cimgrp",
             None
         ));
-        let pfctl = "# anchor com.cim\npass\tout\tquick\tinet proto tcp from any to 127.0.0.1 port = 7890 group = 501 flags S/SA\npass out quick inet proto tcp from any to 127.0.0.1 port = 7891 group = 501 flags S/SA\npass out quick inet6 proto tcp from any to ::1 port = 7890 group = 501 flags S/SA\npass out quick inet6 proto tcp from any to ::1 port = 7891 group = 501 flags S/SA\nblock return out quick all group = 501";
+        let pfctl = "# anchor com.cim\npass in quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 group = 501 flags S/SA keep state\npass\tout\tquick\tinet proto tcp from any to 127.0.0.1 port = 7890 group = 501 flags any no state\npass out quick inet proto tcp from any to 127.0.0.1 port = 7891 group = 501 flags any no state\npass out quick inet6 proto tcp from any to ::1 port = 7890 group = 501 flags any no state\npass out quick inet6 proto tcp from any to ::1 port = 7891 group = 501 flags any no state\nblock return out quick all group = 501";
         assert!(live_rules_match(
             FirewallMode::Allowed,
             pfctl,
@@ -623,6 +1071,116 @@ mod tests {
             source_host,
             "cimgrp",
             Some("501")
+        ));
+    }
+
+    #[test]
+    fn live_rules_reject_any_extra_pass_and_broadened_control_rule() {
+        for (mode, template) in [
+            (FirewallMode::Allowed, ALLOW_RULES_TEMPLATE),
+            (FirewallMode::Blocked, BLOCK_RULES),
+        ] {
+            for changed in [
+                format!("pass out quick all\n{template}"),
+                format!("{template}\npass out quick inet proto tcp from any to any"),
+                template.replace("on lo0", "on en0"),
+                template.replace("from 127.0.0.1 to 127.0.0.1", "from any to 127.0.0.1"),
+                template.replace("from 127.0.0.1 to 127.0.0.1", "from 127.0.0.1 to any"),
+                template.replace("to 127.0.0.1 group cimgrp", "to 127.0.0.1 group != cimgrp"),
+                template.replace("to 127.0.0.1 group cimgrp", "to 127.0.0.1 group 20"),
+                template.replace("to 127.0.0.1 group cimgrp", "to 127.0.0.1"),
+                template.replace("pass in quick on lo0", "pass out quick on lo0"),
+                template.replace("on lo0 inet proto tcp", "on lo0 inet6 proto tcp"),
+                template.replace("on lo0 inet proto tcp", "on lo0 inet proto udp"),
+                template.replace("flags S/SA keep state", "flags any keep state"),
+                template.replace("flags S/SA keep state", "flags S/SA no state"),
+                template.replace("block return out quick", "block return in quick"),
+            ] {
+                assert!(
+                    !live_rules_match(mode, &changed, "cimgrp", Some("501")),
+                    "{changed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn host_control_accepts_only_syn_state_defaults_and_exact_group() {
+        for (mode, template) in [
+            (FirewallMode::Allowed, ALLOW_RULES_TEMPLATE),
+            (FirewallMode::Blocked, BLOCK_RULES),
+        ] {
+            assert!(live_rules_match(
+                mode,
+                &template.replace("flags S/SA keep state", "flags S/SA"),
+                "cimgrp",
+                None,
+            ));
+            assert!(live_rules_match(
+                mode,
+                &template.replace("group cimgrp", "group = 501"),
+                "cimgrp",
+                Some("501"),
+            ));
+            assert!(!live_rules_match(
+                mode,
+                &template.replace("flags S/SA keep state", ""),
+                "cimgrp",
+                None,
+            ));
+        }
+    }
+
+    #[test]
+    fn proxy_rules_require_stateless_all_packet_filtering() {
+        assert!(live_rules_match(
+            FirewallMode::Allowed,
+            &ALLOW_RULES_TEMPLATE.replace("flags any no state", "no state"),
+            "cimgrp",
+            None,
+        ));
+        for state in [
+            "",
+            "keep state",
+            "flags S/SA keep state",
+            "flags any keep state",
+            "flags S/SA no state",
+            "flags any",
+        ] {
+            // One stateful (or SYN-only) proxy rule is enough to reject the
+            // entire policy; this is not a majority-of-rules check.
+            let unsafe_rules = ALLOW_RULES_TEMPLATE.replacen("flags any no state", state, 1);
+            assert!(
+                !live_rules_match(FirewallMode::Allowed, &unsafe_rules, "cimgrp", None,),
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_rules_reject_premature_block_and_negated_proxy_group() {
+        for (mode, template) in [
+            (FirewallMode::Allowed, ALLOW_RULES_TEMPLATE),
+            (FirewallMode::Blocked, BLOCK_RULES),
+        ] {
+            let mut lines = template
+                .lines()
+                .filter(|line| !line.starts_with('#') && !line.is_empty())
+                .collect::<Vec<_>>();
+            lines.rotate_right(1);
+            assert!(!live_rules_match(mode, &lines.join("\n"), "cimgrp", None));
+            let without_control = template
+                .lines()
+                .filter(|line| !line.contains("on lo0"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!live_rules_match(mode, &without_control, "cimgrp", None));
+        }
+        assert!(!live_rules_match(
+            FirewallMode::Allowed,
+            &ALLOW_RULES_TEMPLATE.replace("port 7890 group cimgrp", "port 7890 group != cimgrp"),
+            "cimgrp",
+            None,
         ));
     }
 }

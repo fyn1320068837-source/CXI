@@ -7,7 +7,7 @@ impl ProxyManager {
             .args([
                 "-s",
                 "-x",
-                "socks5://127.0.0.1:7891",
+                "socks5h://127.0.0.1:7891",
                 "--max-time",
                 &self.config.health_check_timeout.to_string(),
                 "https://ipv4.icanhazip.com",
@@ -30,7 +30,7 @@ impl ProxyManager {
                 .args([
                     "-s",
                     "-x",
-                    "socks5://127.0.0.1:7891",
+                    "socks5h://127.0.0.1:7891",
                     "--max-time",
                     &self.config.health_check_timeout.to_string(),
                     endpoint.as_str(),

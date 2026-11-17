@@ -103,6 +103,28 @@ async fn save_proxy_config(
     axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
     Json(payload): Json<SaveProxyRequest>,
 ) -> Json<serde_json::Value> {
+    if !valid_proxy_text(&payload.host) || payload.host.len() > 253 {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "代理 host 包含非法字符"
+        }));
+    }
+    if payload.port == 0 {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "代理端口无效"
+        }));
+    }
+    if payload
+        .username
+        .as_deref()
+        .is_some_and(|username| !username.is_empty() && !valid_proxy_text(username))
+    {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": "代理用户名包含非法字符"
+        }));
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     let config_path = format!("{}/.cim/config.toml", home);
 
@@ -117,6 +139,16 @@ async fn save_proxy_config(
         return Json(serde_json::json!({
             "success": false,
             "message": format!("写入配置失败: {}", e)
+        }));
+    }
+    #[cfg(unix)]
+    if let Err(error) = std::fs::set_permissions(
+        &config_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    ) {
+        return Json(serde_json::json!({
+            "success": false,
+            "message": format!("配置权限收紧失败: {error}")
         }));
     }
 
@@ -135,6 +167,15 @@ async fn save_proxy_config(
         "success": true,
         "message": "代理配置已保存"
     }))
+}
+
+fn valid_proxy_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            !character.is_control()
+                && !character.is_whitespace()
+                && !matches!(character, '"' | '\\' | '\n' | '\r')
+        })
 }
 
 fn update_proxy_in_toml(content: &str, host: &str, port: u16, username: &Option<String>) -> String {
@@ -199,7 +240,7 @@ async fn test_proxy(
         .args([
             "-s",
             "-x",
-            "socks5://127.0.0.1:7891",
+            "socks5h://127.0.0.1:7891",
             "--max-time",
             "8",
             "https://ipv4.icanhazip.com",

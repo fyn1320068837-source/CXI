@@ -106,6 +106,92 @@ pub(super) fn find_free_port() -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+/// Open a new tab in the CIM-owned Chromium profile through its loopback
+/// DevTools endpoint. Chromium versions differ in whether they expose
+/// `/json/new` (and in which HTTP method they accept), so fall back to a
+/// page-scoped `Page.navigate` command when the discovery endpoint rejects the
+/// request. The endpoint is only bound to 127.0.0.1 and the caller validates
+/// the destination first.
+pub(super) async fn navigate_browser(port: u16, url: &str) -> Result<()> {
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    // Chrome's `/json/new` endpoint treats the whole query string as the
+    // destination URL.  Passing `?url=...` returns 200 but silently opens an
+    // about:blank tab on current Chromium builds.
+    let endpoint = reqwest::Url::parse(&format!(
+        "http://127.0.0.1:{port}/json/new?{}",
+        encode_query_component(url)
+    ))
+    .context("invalid CIM Web DevTools endpoint")?;
+
+    match client.put(endpoint).send().await {
+        Ok(response) if response.status().is_success() => {
+            let target = response.json::<DevToolsTarget>().await.ok();
+            if target
+                .as_ref()
+                .and_then(|target| target.url.as_deref())
+                .filter(|target_url| !target_url.is_empty() && *target_url != "about:blank")
+                .is_some()
+            {
+                return Ok(());
+            }
+            tracing::debug!(
+                port,
+                "Chromium created a blank target; falling back to Page.navigate"
+            );
+        }
+        Ok(response) => {
+            // A number of bundled Chromium builds return 404/405 for
+            // `/json/new` even though page-level CDP navigation is enabled.
+            // Keep this detail local: the user-facing API should not expose a
+            // browser version or the OAuth URL.
+            tracing::debug!(port, status = %response.status(), "Chromium rejected /json/new; falling back to Page.navigate");
+        }
+        Err(error) => {
+            tracing::debug!(port, error = %error, "Chromium /json/new request failed; falling back to Page.navigate");
+        }
+    }
+
+    let list_endpoint = format!("http://127.0.0.1:{port}/json/list");
+    let targets = client
+        .get(list_endpoint)
+        .send()
+        .await
+        .context("failed to list CIM Web DevTools targets")?
+        .error_for_status()
+        .context("CIM Web DevTools refused target discovery")?
+        .json::<Vec<DevToolsTarget>>()
+        .await
+        .context("invalid CIM Web DevTools target list")?;
+    let target = targets
+        .into_iter()
+        .find(|target| {
+            target.target_type.as_deref() == Some("page") && target.websocket_url.is_some()
+        })
+        .context("CIM Web has no page target for authentication")?;
+    let websocket_url = target
+        .websocket_url
+        .context("CIM Web page target has no DevTools endpoint")?;
+    let (mut socket, _) = connect_async(websocket_url)
+        .await
+        .context("failed to connect to CIM Web page DevTools")?;
+    send_cdp_command(&mut socket, 1, "Page.navigate", json!({"url": url}))
+        .await
+        .context("CIM Web refused the authentication navigation")?;
+    Ok(())
+}
+
+fn encode_query_component(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            byte => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
 fn process_exists(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -966,9 +1052,20 @@ pub(crate) fn sanitize_request_url(url: &str) -> String {
         .unwrap_or(&rest[..authority_end]);
     let path_and_query = &rest[authority_end..];
     let path = path_and_query.split(['?', '#']).next().unwrap_or_default();
-    let sensitive = ["/auth", "/login", "/oauth", "/token", "/session"]
-        .iter()
-        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")));
+    let sensitive = [
+        "/auth",
+        "/login",
+        "/oauth",
+        "/token",
+        "/session",
+        "/sso",
+        "/authorize",
+        "/callback",
+        "/signin",
+        "/sign-in",
+    ]
+    .iter()
+    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")));
     let safe_path = if sensitive {
         "/[redacted]".to_string()
     } else {
@@ -1107,9 +1204,17 @@ where
 #[cfg(test)]
 mod session_marker_tests {
     use super::{
-        command_uses_session_dir, command_uses_session_marker, parse_session_processes,
-        processes_using_session_dir,
+        command_uses_session_dir, command_uses_session_marker, encode_query_component,
+        parse_session_processes, processes_using_session_dir,
     };
+
+    #[test]
+    fn devtools_new_target_uses_raw_encoded_query() {
+        assert_eq!(
+            encode_query_component("https://accounts.google.com/o/oauth2?x=1&y=2"),
+            "https%3A%2F%2Faccounts.google.com%2Fo%2Foauth2%3Fx%3D1%26y%3D2"
+        );
+    }
 
     #[test]
     fn marker_matches_only_the_full_session_path() {
