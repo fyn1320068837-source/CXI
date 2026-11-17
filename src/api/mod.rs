@@ -111,11 +111,13 @@ pub async fn create_router(
         .route("/api/proxy/restart", post(restart_proxy))
         .route("/api/instances/:kind/launch", post(launch_instance))
         .route("/api/instances/:kind/stop", post(stop_instance))
+        .route("/api/browser/stop", post(stop_browser))
         .route("/api/instances/web/open-auth", post(open_web_auth))
         .route("/api/instances/claude-web/open-auth", post(open_web_auth))
         .route("/api/logs", get(get_logs).delete(clear_logs))
         .route("/api/validation/:kind", get(get_validation_history))
         .route("/api/security/web", get(get_web_security))
+        .route("/api/security/gemini-web", get(get_gemini_security))
         .route("/api/security/claude-web", get(get_web_security))
         .route("/api/security/desktop", get(get_desktop_security))
         .route("/api/security/claude-desktop", get(get_desktop_security))
@@ -139,6 +141,15 @@ mod security_tests {
         direct_endpoints, evidence_state, fail_closed_state, parse_checked_pids,
         parse_detail_count, web_check_matrix,
     };
+
+    #[test]
+    fn browser_evidence_paths_do_not_share_active_probe_files() {
+        let claude = super::active_probe_path(crate::instance::InstanceKind::Web);
+        let gemini = super::active_probe_path(crate::instance::InstanceKind::GeminiWeb);
+        assert!(claude.ends_with(".cim/evidence/web-active.json"));
+        assert!(gemini.ends_with(".cim/evidence/gemini-web-active.json"));
+        assert_ne!(claude, gemini);
+    }
 
     #[test]
     fn parses_network_validation_details() {

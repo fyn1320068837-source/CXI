@@ -2,15 +2,15 @@ const SECURITY_EVIDENCE_TTL_SECONDS: i64 = 90;
 const SECURITY_EVIDENCE_MATCH_WINDOW_SECONDS: i64 = 30;
 const ACTIVE_PROBE_TTL_SECONDS: i64 = 600;
 
-fn active_probe_path() -> std::path::PathBuf {
+fn active_probe_path(kind: InstanceKind) -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".cim/evidence/web-active.json")
+        .join(format!(".cim/evidence/{}-active.json", kind.as_str()))
 }
 
-fn load_active_probe() -> Option<serde_json::Value> {
-    let bytes = std::fs::read(active_probe_path()).ok()?;
+fn load_active_probe(kind: InstanceKind) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(active_probe_path(kind)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -179,12 +179,12 @@ fn web_check_matrix(input: &WebCheckInput<'_>) -> serde_json::Value {
             "risk": "same-host processes may still probe the DevTools endpoint",
         },
         "workspace_scope": {
-            "status": "isolated_profile",
-            "evidence": "per-instance/per-session data directory",
+            "status": "shared_managed_profile",
+            "evidence": "Claude and Gemini share the persistent CIM Web profile; separate from everyday browser",
         },
         "evidence": {
             "status": evidence_state(input.has_timestamp, input.evidence_fresh),
-            "scope": "web_process_tree",
+            "scope": "shared_browser_process_tree",
             "source": "lsof",
         },
         "dns_udp53": {
@@ -273,6 +273,16 @@ fn direct_endpoints(details: &str) -> Vec<String> {
 async fn get_web_security(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
+    browser_security(state, InstanceKind::Web).await
+}
+
+async fn get_gemini_security(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    browser_security(state, InstanceKind::GeminiWeb).await
+}
+
+async fn browser_security(state: Arc<AppState>, kind: InstanceKind) -> Json<serde_json::Value> {
     let manager = state.instance_manager.read().await;
     let snapshot = manager.snapshot_all().await;
     let status_map = &snapshot.status;
@@ -282,16 +292,16 @@ async fn get_web_security(
     let firewall = state.proxy_manager.firewall_status();
     let proxy_healthy = state.proxy_manager.is_healthy();
     let geo_ready = geo_profile.is_ready();
-    let web_running = status_map.get(&InstanceKind::Web).copied().unwrap_or(false);
-    let web_pid = pid_map.get(&InstanceKind::Web).copied().flatten();
-    let validation = validation_map.get(&InstanceKind::Web);
+    let web_running = status_map.get(&kind).copied().unwrap_or(false);
+    let web_pid = pid_map.get(&kind).copied().flatten();
+    let validation = validation_map.get(&kind);
     let validation_name = validation
         .map(|value| validation_name(&value.status))
         .unwrap_or("unknown");
     let validation_checked_at = validation.and_then(|value| value.checked_at.clone());
     let evidence = state
         .storage
-        .recent_validation_evidence_async("web", 1)
+        .recent_validation_evidence_async(kind.as_str(), 1)
         .await
         .ok()
         .and_then(|values| values.into_iter().next());
@@ -378,7 +388,7 @@ async fn get_web_security(
     let firewall_global_verified = firewall.global_enabled && firewall.root_anchor_loaded;
     let validation_pass = validation_name == "pass" && evidence_fresh;
     let direct_zero = direct == Some(0);
-    let active_probe = load_active_probe();
+    let active_probe = load_active_probe(kind);
     let active_probe_ref = active_probe.as_ref();
     let probe_now = Utc::now();
     let probe_status = |key| {
@@ -469,6 +479,9 @@ async fn get_web_security(
 
     Json(serde_json::json!({
         "success": true,
+        "instance_id": kind.definition().id,
+        "runtime_id": "managed-browser",
+        "shared_with": ["claude-web", "gemini-web"],
         "verdict": verdict,
         "label": label,
         "checked_at": checked_at,
@@ -498,11 +511,11 @@ async fn get_web_security(
             "direct": direct,
             "direct_endpoints": direct_items,
         },
-        "scope": "web_process_tree",
+        "scope": "shared_browser_process_tree",
         "assurance": "process_tree",
         "active_probe_status": active_probe_summary,
         "active_probe": {
-            "path": active_probe_path(),
+            "path": active_probe_path(kind),
             "ttl_seconds": ACTIVE_PROBE_TTL_SECONDS,
             "root_pid": active_probe_ref.and_then(|value| value.get("root_pid")),
             "exit_ip": active_probe_ref.and_then(|value| value.get("exit_ip")),
@@ -524,7 +537,7 @@ async fn get_web_security(
         },
         "reasons": reasons,
         "limitations": [
-            "结论基于 Web 进程树 lsof 观测，不是全局抓包保证",
+            "结论基于共享浏览器进程树，不能将连接数量归属到单个站点；不是全局抓包保证",
             "主动探测按各项真实采样时间在 10 分钟后过期；实例 PID 或出口 IP 变化需重新验证",
             "请求 URL 日志只能说明访问目标，不能作为直连判定依据",
         ],

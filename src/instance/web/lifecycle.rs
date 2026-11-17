@@ -380,30 +380,31 @@ impl InstanceAdapter for WebAdapter {
 
         if profile.is_ready() {
             let capture_requests = self.request_log_tx.is_some();
-            let browser_session =
-                match apply_browser_profile(debug_port, &profile, capture_requests).await {
-                    Ok(session) => session,
-                    Err(error) => {
-                        tracing::error!(
-                            port = debug_port,
-                            error = %error,
-                            chain = %format!("{:#}", error),
-                            "Failed to apply browser locale/timezone profile"
-                        );
-                        terminate_web_processes(
-                            root_pid,
-                            Some(&session_dir),
-                            Some(&self.profile_dir),
-                        )
+            let browser_session = match apply_browser_profile(
+                debug_port,
+                &profile,
+                capture_requests,
+                self.site,
+            )
+            .await
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    tracing::error!(
+                        port = debug_port,
+                        error = %error,
+                        chain = %format!("{:#}", error),
+                        "Failed to apply browser locale/timezone profile"
+                    );
+                    terminate_web_processes(root_pid, Some(&session_dir), Some(&self.profile_dir))
                         .await;
-                        let _ = std::fs::remove_dir_all(&session_dir);
-                        return Err(
-                            error.context("Failed to apply browser locale/timezone profile")
-                        );
-                    }
-                };
+                    let _ = std::fs::remove_dir_all(&session_dir);
+                    return Err(error.context("Failed to apply browser locale/timezone profile"));
+                }
+            };
 
             let initial_target_id = browser_session.target_id.clone();
+            *self.initial_target.lock().unwrap() = initial_target_id.clone();
 
             // Keep the same CDP connection that installed the overrides. A
             // second debugger client can race the profile connection on some
@@ -414,6 +415,7 @@ impl InstanceAdapter for WebAdapter {
                     browser_session.socket,
                     root_pid,
                     sender.clone(),
+                    self.site,
                 ));
             }
             tokio::spawn(monitor_browser_targets(
@@ -422,12 +424,15 @@ impl InstanceAdapter for WebAdapter {
                 profile,
                 initial_target_id,
                 self.request_log_tx.clone(),
+                self.site,
             ));
         } else if let Some(sender) = self.request_log_tx.clone() {
             // Without GeoIP data Chrome starts directly on Claude, so the
             // monitor attaches independently because there is no profile
             // connection to share.
-            tokio::spawn(monitor_browser_requests(debug_port, root_pid, sender));
+            tokio::spawn(monitor_browser_requests(
+                debug_port, root_pid, sender, self.site,
+            ));
         }
 
         self.sessions.lock().unwrap().insert(root_pid, session_dir);
@@ -507,6 +512,58 @@ mod tests {
     use crate::instance::WebAdapter;
     use std::fs;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn gemini_prepare_and_cleanup_preserve_claude_and_both_persistent_profiles() {
+        use crate::instance::InstanceAdapter;
+        let root = std::env::temp_dir().join(format!("cim-gemini-isolation-{}", Uuid::new_v4()));
+        let claude_root = root.join("web");
+        let gemini_root = root.join("gemini-web");
+        fs::create_dir_all(claude_root.join("profile/Default")).unwrap();
+        fs::create_dir_all(claude_root.join("sessions/keep")).unwrap();
+        let cookie = claude_root.join("profile/Default/Cookies");
+        fs::write(&cookie, b"claude fixture login sentinel").unwrap();
+        let adapter =
+            WebAdapter::new_gemini(gemini_root.to_string_lossy().into_owned(), shared_profile());
+        adapter.prepare().await.unwrap();
+        let gemini_cookie = gemini_root.join("profile/Default/Cookies");
+        fs::write(&gemini_cookie, b"gemini fixture login sentinel").unwrap();
+        fs::create_dir_all(gemini_root.join("sessions/old")).unwrap();
+        adapter.cleanup_orphaned_sessions().await.unwrap();
+        assert_eq!(fs::read(&cookie).unwrap(), b"claude fixture login sentinel");
+        assert_eq!(
+            fs::read(&gemini_cookie).unwrap(),
+            b"gemini fixture login sentinel"
+        );
+        assert!(claude_root.join("sessions/keep").exists());
+        assert!(!gemini_root.join("sessions/old").exists());
+        let prefs: serde_json::Value = serde_json::from_slice(
+            &fs::read(gemini_root.join("profile/Default/Preferences")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prefs["webrtc"]["ip_handling_policy"],
+            "disable_non_proxied_udp"
+        );
+        let args = browser_launch_args(
+            &adapter.profile_dir,
+            "/fixture/gemini-session",
+            9223,
+            &GeoProfile::default(),
+        );
+        assert!(args.contains(&"--proxy-server=socks5://127.0.0.1:7891".into()));
+        assert!(args.contains(&"--disable-quic".into()));
+        assert_eq!(args.last().unwrap(), "about:blank");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&gemini_root).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn web_command_uses_persistent_profile_and_network_guards() {

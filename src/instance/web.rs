@@ -20,7 +20,42 @@ use uuid::Uuid;
 
 type BrowserSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum WebSite {
+    Claude,
+    Gemini,
+}
+
+impl WebSite {
+    fn origin(self) -> &'static str {
+        match self {
+            Self::Claude => "https://claude.ai",
+            Self::Gemini => "https://gemini.google.com",
+        }
+    }
+    fn entry_url(self) -> &'static str {
+        match self {
+            Self::Claude => "https://claude.ai",
+            Self::Gemini => "https://gemini.google.com/app",
+        }
+    }
+    fn log_key(self) -> &'static str {
+        match self {
+            Self::Claude => "web",
+            Self::Gemini => "gemini-web",
+        }
+    }
+    fn language_script(self, language: &str) -> String {
+        if self == Self::Claude {
+            return cdp::language_override_script(language);
+        }
+        let base = language.split('-').next().unwrap_or(language);
+        format!("Object.defineProperty(Navigator.prototype, 'language', {{configurable: true, get: () => {:?}}}); Object.defineProperty(Navigator.prototype, 'languages', {{configurable: true, get: () => [{:?}, {:?}]}});", language, language, base)
+    }
+}
+
 pub struct WebAdapter {
+    site: WebSite,
     user_data_dir: String,
     profile_dir: String,
     geo_profile: SharedGeoProfile,
@@ -31,18 +66,29 @@ pub struct WebAdapter {
     /// ownership explicit and avoids ever routing an auth URL to an unrelated
     /// Chrome profile.
     debug_ports: Arc<Mutex<HashMap<u32, u16>>>,
+    initial_target: Arc<Mutex<Option<String>>>,
 }
 
 impl WebAdapter {
     pub fn new_with_geo_profile(user_data_dir: String, geo_profile: SharedGeoProfile) -> Self {
+        Self::for_site(user_data_dir, geo_profile, WebSite::Claude)
+    }
+
+    pub fn new_gemini(user_data_dir: String, geo_profile: SharedGeoProfile) -> Self {
+        Self::for_site(user_data_dir, geo_profile, WebSite::Gemini)
+    }
+
+    fn for_site(user_data_dir: String, geo_profile: SharedGeoProfile, site: WebSite) -> Self {
         let profile_dir = format!("{user_data_dir}/profile");
         Self {
+            site,
             user_data_dir,
             profile_dir,
             geo_profile,
             request_log_tx: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             debug_ports: Arc::new(Mutex::new(HashMap::new())),
+            initial_target: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -60,6 +106,10 @@ impl WebAdapter {
     /// outside CIM.  This narrow bridge lets the daemon route that URL into
     /// the already isolated Web profile without copying cookies or tokens.
     pub async fn open_auth_url(&self, raw_url: &str) -> Result<()> {
+        anyhow::ensure!(
+            self.site == WebSite::Claude,
+            "Desktop authentication handoff is only supported by Claude Web"
+        );
         let url = validate_auth_url(raw_url)?;
 
         let port = self
@@ -100,6 +150,7 @@ fn validate_auth_url(raw_url: &str) -> Result<reqwest::Url> {
 
 mod cdp;
 mod lifecycle;
+pub(crate) mod shared;
 
 #[cfg(test)]
 mod tests {
@@ -107,6 +158,40 @@ mod tests {
         cdp::{language_override_script, sanitize_request_url},
         validate_auth_url,
     };
+
+    #[test]
+    fn gemini_uses_its_own_entry_and_generic_language_overrides() {
+        let geo = crate::geoip::shared_profile();
+        let claude = super::WebAdapter::new_with_geo_profile("/fixture/web".into(), geo.clone());
+        let gemini = super::WebAdapter::new_gemini("/fixture/gemini-web".into(), geo);
+        assert_eq!(claude.profile_dir, "/fixture/web/profile");
+        assert_eq!(gemini.profile_dir, "/fixture/gemini-web/profile");
+        assert_eq!(gemini.site.entry_url(), "https://gemini.google.com/app");
+        assert_eq!(gemini.site.log_key(), "gemini-web");
+        let script = gemini.site.language_script("en-US");
+        assert!(script.contains("Navigator.prototype"));
+        assert!(!script.contains("claude.ai"));
+        assert!(!script.contains("localStorage"));
+        assert!(!script.contains("cookie"));
+        assert!(claude
+            .site
+            .language_script("en-US")
+            .contains("signin-locale"));
+    }
+
+    #[tokio::test]
+    async fn gemini_cannot_receive_desktop_auth_handoff() {
+        let adapter = super::WebAdapter::new_gemini(
+            "/fixture/gemini-web".into(),
+            crate::geoip::shared_profile(),
+        );
+        assert!(adapter
+            .open_auth_url("https://claude.ai/login")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("only supported by Claude Web"));
+    }
 
     #[test]
     fn request_log_urls_drop_query_values() {

@@ -27,7 +27,7 @@ impl Default for InstanceConfig {
 
 pub fn policy(kind: InstanceKind) -> &'static str {
     match kind {
-        InstanceKind::Web => "managed-browser",
+        InstanceKind::Web | InstanceKind::GeminiWeb => "managed-browser",
         InstanceKind::Desktop => "desktop-lite",
         InstanceKind::Code => "managed-cli",
         InstanceKind::VsCode => "managed-ide",
@@ -127,6 +127,21 @@ impl InstanceConfigs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_defaults_share_network_but_not_desktop_auth() {
+        let configs = InstanceConfigs::default();
+        let gemini = configs.get(InstanceKind::GeminiWeb);
+        assert!(gemini.enabled);
+        assert!(!gemini.autostart);
+        assert_eq!(gemini.network_profile, "default");
+        assert_eq!(gemini.isolation_policy.as_deref(), Some("managed-browser"));
+        assert!(gemini.auth_browser.is_none());
+        assert!(
+            toml::from_str::<InstanceConfigs>("[claude-desktop]\nauth_browser = 'gemini-web'")
+                .is_err()
+        );
+    }
 
     #[test]
     fn partial_configs_fill_defaults_without_enabling_autostart() {

@@ -72,6 +72,14 @@ pub trait InstanceAdapter: Send + Sync {
         anyhow::bail!("authentication handoff is unsupported by this adapter")
     }
 
+    /// Shared runtimes must not terminate sibling processes during rollback.
+    fn owns_process_tree(&self) -> bool {
+        true
+    }
+    async fn focus(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn detect(&self) -> CapabilityReport;
     async fn prepare(&self) -> Result<()>;
     async fn launch(&self) -> Result<ProcessHandle>;

@@ -26,18 +26,19 @@ pub struct InstanceSnapshot {
 
 impl InstanceManager {
     pub fn with_geo_profile(geo_profile: SharedGeoProfile) -> Self {
+        let home = std::env::var("HOME").unwrap();
+        let shared_web = super::web::shared::SharedWebAdapter::pair(&home, geo_profile.clone());
+        let mut adapters: HashMap<_, _> = APPLICATIONS
+            .iter()
+            .filter(|app| !matches!(app.kind, InstanceKind::Web | InstanceKind::GeminiWeb))
+            .map(|app| (app.kind, app.create_adapter(&home, geo_profile.clone())))
+            .collect();
+        adapters.insert(InstanceKind::Web, shared_web.0);
+        adapters.insert(InstanceKind::GeminiWeb, shared_web.1);
         Self {
             runtime: InstanceRuntime::new(),
             configs: crate::config::InstanceConfigs::default(),
-            adapters: APPLICATIONS
-                .iter()
-                .map(|app| {
-                    (
-                        app.kind,
-                        app.create_adapter(&std::env::var("HOME").unwrap(), geo_profile.clone()),
-                    )
-                })
-                .collect(),
+            adapters,
             storage: None,
             verifier: NetworkVerifier::new(),
             geo_profile,
@@ -100,6 +101,12 @@ impl InstanceManager {
     pub async fn launch(&self, kind: InstanceKind) -> Result<()> {
         self.configs.require_enabled(kind)?;
         let adapter = self.adapter_for(kind)?;
+        if matches!(kind, InstanceKind::Web | InstanceKind::GeminiWeb)
+            && !adapter.owns_process_tree()
+            && self.runtime.is_running(kind).await
+        {
+            return adapter.focus().await;
+        }
         let reservation = self.runtime.reserve(kind).await?;
 
         let capability = adapter.detect().await;
@@ -527,6 +534,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stopping_gemini_keeps_claude_web_running() {
+        let (manager, events) = recording_manager();
+        manager
+            .launch(crate::instance::InstanceKind::Web)
+            .await
+            .unwrap();
+        manager
+            .launch(crate::instance::InstanceKind::GeminiWeb)
+            .await
+            .unwrap();
+        assert!(manager
+            .launch(crate::instance::InstanceKind::GeminiWeb)
+            .await
+            .is_err());
+        manager
+            .stop(crate::instance::InstanceKind::GeminiWeb)
+            .await
+            .unwrap();
+        assert!(manager.is_running(crate::instance::InstanceKind::Web).await);
+        assert!(
+            !manager
+                .is_running(crate::instance::InstanceKind::GeminiWeb)
+                .await
+        );
+        assert!(!events.lock().unwrap().contains(&"claude-web:stop".into()));
+        manager.stop_all().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn registered_dispatch_preserves_single_instance_lifecycle_and_scan_failure() {
         let (manager, events) = recording_manager();
         for app in &crate::instance::APPLICATIONS {
@@ -539,7 +575,7 @@ mod tests {
             assert!(manager.launch(alias).await.is_err());
         }
         let snapshot = manager.snapshot_all().await;
-        assert_eq!(snapshot.status.len(), 4);
+        assert_eq!(snapshot.status.len(), crate::instance::APPLICATIONS.len());
         for value in snapshot.validation.values() {
             assert!(matches!(
                 value.status,
@@ -577,8 +613,12 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(
-            &cleanups[..2],
-            ["claude-web:cleanup", "claude-desktop:cleanup"]
+            &cleanups[..3],
+            [
+                "claude-web:cleanup",
+                "gemini-web:cleanup",
+                "claude-desktop:cleanup"
+            ]
         );
         assert_eq!(
             events
@@ -587,7 +627,7 @@ mod tests {
                 .iter()
                 .filter(|event| event.ends_with(":logs"))
                 .count(),
-            4
+            crate::instance::APPLICATIONS.len()
         );
         manager
             .open_web_auth_url("https://claude.ai/login")

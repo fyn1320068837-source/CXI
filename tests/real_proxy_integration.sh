@@ -132,13 +132,13 @@ PY
     process_tree_env+="$(ps eww -p "$process_pid" -o command= 2>/dev/null || true)\n"
   done
 
-  if [[ "$kind" == "web" ]]; then
+  if [[ "$kind" == "web" || "$kind" == "gemini-web" ]]; then
     assert_contains "$kind proxy" '--proxy-server=socks5://127.0.0.1:7891' "$process_tree_cmd"
     # The browser profile is persistent so Claude/Cloudflare cookies survive a
     # restart.  A separate per-launch marker remains transient and is used for
     # orphan cleanup without deleting the persistent profile.
-    assert_contains "$kind profile dir" "--user-data-dir=$HOME/.cim/instances/web/profile" "$process_tree_cmd"
-    assert_contains "$kind session marker" "--cim-session-dir=$HOME/.cim/instances/web/sessions/" "$process_tree_cmd"
+    assert_contains "$kind profile dir" "--user-data-dir=$HOME/.cim/instances/$kind/profile" "$process_tree_cmd"
+    assert_contains "$kind session marker" "--cim-session-dir=$HOME/.cim/instances/$kind/sessions/" "$process_tree_cmd"
     assert_contains "$kind language" "--lang=$expected_lang" "$process_tree_cmd"
     assert_contains "$kind Apple language" '-AppleLanguages' "$process_tree_cmd"
     assert_contains "$kind Apple locale" '-AppleLocale' "$process_tree_cmd"
@@ -194,8 +194,8 @@ else:
     assert latest["status"] in ("pass", "unknown"), latest
     print("code API snapshot had no proxied count; lsof still checked the live process sockets")
 PY
-  if [[ "$kind" == "web" ]]; then
-    security="$(curl_json "$BASE_URL/api/security/web")"
+  if [[ "$kind" == "web" || "$kind" == "gemini-web" ]]; then
+    security="$(curl_json "$BASE_URL/api/security/$kind")"
     python3 - "$security" <<'PY'
 import json, sys
 payload = json.loads(sys.argv[1])

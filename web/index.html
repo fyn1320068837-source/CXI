@@ -446,6 +446,8 @@
     <!-- ── 实例管理 ── -->
     <section>
         <h2>实例管理</h2>
+        <button class="btn btn-secondary" onclick="stopBrowser()">停止整个受管浏览器</button>
+            <p>Claude Web 和 Gemini Web 共用一个持久浏览器、账号环境及代理/PF；网络连接证据为整个浏览器范围。关闭最后一个受管站点会退出浏览器。</p>
         <div class="grid2">
 
             <div class="card" id="inst-code">
@@ -535,7 +537,7 @@
             <div class="card" id="inst-web">
                 <div class="inst-header">
                     <span class="inst-title">D · Claude Web</span>
-                    <span class="inst-label">Chromium</span>
+                    <span class="inst-label">共享浏览器 · 独立标签页</span>
                 </div>
                 <div class="inst-row">
                     <span>状态</span>
@@ -554,8 +556,39 @@
                     <span class="validation-detail" id="web-validation-checked-at">—</span>
                 </div>
                 <div class="inst-actions">
-                    <button class="btn btn-primary"    id="web-launch-btn" onclick="launch('web')">启动</button>
-                    <button class="btn btn-secondary"  id="web-stop-btn"   onclick="stop('web')">停止</button>
+                    <button class="btn btn-primary"    id="web-launch-btn" onclick="launch('web')">打开 / 聚焦</button>
+                    <button class="btn btn-secondary"  id="web-stop-btn"   onclick="stop('web')">关闭标签页</button>
+                </div>
+            </div>
+
+            <div class="card" id="inst-gemini-web">
+                <div class="inst-header">
+                    <span class="inst-title">E · Gemini Web</span>
+                    <span class="inst-label">共享浏览器 · 独立标签页</span>
+                </div>
+                <div class="inst-row">
+                    <span>状态</span>
+                    <span id="gemini-web-status"><span class="badge badge-stopped">已停止</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>验证</span>
+                    <span id="gemini-web-validation"><span class="badge badge-grey">UNKNOWN</span></span>
+                </div>
+                <div class="inst-row">
+                    <span>连接证据</span>
+                    <span class="validation-detail" id="gemini-web-validation-details">—</span>
+                </div>
+                <div class="inst-row">
+                    <span>最近检查</span>
+                    <span class="validation-detail" id="gemini-web-validation-checked-at">—</span>
+                </div>
+                <div class="inst-row">
+                    <span>安全结论</span>
+                    <span class="validation-detail" id="gemini-web-security">待确认 · 尚无主动泄漏验证证据</span>
+                </div>
+                <div class="inst-actions">
+                    <button class="btn btn-primary"    id="gemini-web-launch-btn" onclick="launch('gemini-web')">打开 / 聚焦</button>
+                    <button class="btn btn-secondary"  id="gemini-web-stop-btn"   onclick="stop('gemini-web')">关闭标签页</button>
                 </div>
             </div>
 
@@ -593,6 +626,8 @@
                     <option value="desktop">B · Desktop</option>
                     <option value="vscode">C · VSCode</option>
                     <option value="web">D · Web</option>
+                    <option value="gemini-web">E · Gemini Web</option>
+                    <option value="browser">共享浏览器 / 其他站点</option>
                 </select>
                 <select id="filter-status" onchange="renderLogs()" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface);color:var(--text)">
                     <option value="">全部状态</option>
@@ -738,7 +773,7 @@ function renderLogs() {
         const sc = l.status === 0 ? 'warn' : l.status >= 500 ? 'fail' : l.status >= 400 ? 'warn' : 'pass';
         const lat = l.latency_ms < 1000 ? l.latency_ms + 'ms' : (l.latency_ms/1000).toFixed(1) + 's';
         const sz  = l.size_bytes > 0 ? (l.size_bytes < 1024 ? l.size_bytes + 'B' : (l.size_bytes/1024).toFixed(1) + 'KB') : '—';
-        const inst = {code:'A',desktop:'B',vscode:'C',web:'D'}[l.instance] || l.instance;
+        const inst = {code:'A',desktop:'B',vscode:'C',web:'D','gemini-web':'E'}[l.instance] || l.instance;
         const outcome = l.error || l.outcome || '—';
         return `<tr style="border-bottom:1px solid var(--border)">
             <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${l.timestamp}</td>
@@ -847,11 +882,20 @@ async function pollSecurity() {
         const requests = await Promise.allSettled([
             fetch('/api/security/web'),
             fetch('/api/security/desktop'),
+            fetch('/api/security/gemini-web'),
         ]);
-        const [webResult, desktopResult] = requests;
+        const [webResult, desktopResult, geminiResult] = requests;
         if (webResult.status === 'fulfilled' && webResult.value.ok) {
             const d = await webResult.value.json();
             if (d.success) renderSecurity(d);
+        }
+        const geminiLabel = document.getElementById('gemini-web-security');
+        if (geminiResult.status === 'fulfilled' && geminiResult.value.ok) {
+            const d = await geminiResult.value.json();
+            geminiLabel.textContent = d.success ? d.label : '待确认 · 安全状态不可用';
+            geminiLabel.title = (d.reasons || []).join('；');
+        } else {
+            geminiLabel.textContent = '待确认 · 安全状态不可用';
         }
         if (desktopResult.status === 'fulfilled' && desktopResult.value.ok) {
             const d = await desktopResult.value.json();
@@ -990,7 +1034,7 @@ function renderInstance(inst) {
     const isRunning = inst.status === 'running';
     const launchBtn = document.getElementById(id + '-launch-btn');
     const stopBtn   = document.getElementById(id + '-stop-btn');
-    if (launchBtn) launchBtn.disabled = isRunning;
+    if (launchBtn) launchBtn.disabled = isRunning && !['web', 'gemini-web'].includes(id);
     if (stopBtn)   stopBtn.disabled   = !isRunning;
 }
 
@@ -1020,10 +1064,18 @@ async function launch(kind) {
     } catch (e) {
         showBanner('请求失败：' + e.message);
     } finally {
-        btn.textContent = '启动';
+        btn.textContent = ['web', 'gemini-web'].includes(kind) ? '打开 / 聚焦' : '启动';
         await poll();
     }
 }
+async function stopBrowser() {
+    try {
+        const result = await fetch('/api/browser/stop', {method: 'POST'}).then(r => r.json());
+        if (!result.success) alert((result.errors || []).join('\n'));
+        await poll();
+    } catch (error) { alert('停止浏览器失败：' + error.message); }
+}
+
 async function stop(kind) {
     const btn = document.getElementById(kind + '-stop-btn');
     btn.disabled = true;
@@ -1035,7 +1087,7 @@ async function stop(kind) {
     } catch (e) {
         showBanner('请求失败：' + e.message);
     } finally {
-        btn.textContent = '停止';
+        btn.textContent = ['web', 'gemini-web'].includes(kind) ? '关闭标签页' : '停止';
         await poll();
     }
 }

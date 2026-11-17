@@ -24,7 +24,7 @@ mod registry_api_tests {
         let body = to_bytes(response.into_body(), 16_384).await.unwrap();
         let apps: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let apps = apps.as_array().unwrap();
-        assert_eq!(apps.len(), 4);
+        assert_eq!(apps.len(), crate::instance::APPLICATIONS.len());
         for app in apps {
             let kind = crate::instance::InstanceKind::parse(app["id"].as_str().unwrap()).unwrap();
             assert_eq!(app["legacy_alias"], kind.as_str());
@@ -158,4 +158,15 @@ async fn stop_instance(
             "message": format!("Failed to stop {}: {}", kind, e)
         })),
     }
+}
+
+async fn stop_browser(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let manager = state.instance_manager.read().await;
+    let mut errors = Vec::new();
+    for kind in [InstanceKind::Web, InstanceKind::GeminiWeb] {
+        if let Err(error) = manager.stop(kind).await { errors.push(error.to_string()); }
+    }
+    Json(serde_json::json!({"success":errors.is_empty(),"errors":errors}))
 }

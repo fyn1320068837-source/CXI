@@ -11,6 +11,7 @@ pub enum InstanceKind {
     Desktop,
     VsCode,
     Web,
+    GeminiWeb,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -39,7 +40,7 @@ pub struct ApplicationDefinition {
     pub(super) cleanup_priority: u8,
 }
 
-pub static APPLICATIONS: [ApplicationDefinition; 4] = [
+pub static APPLICATIONS: [ApplicationDefinition; 5] = [
     ApplicationDefinition {
         id: "claude-code",
         product: "claude",
@@ -90,6 +91,17 @@ pub static APPLICATIONS: [ApplicationDefinition; 4] = [
         requires_geo_profile: true,
         cleanup_priority: 10,
     },
+    ApplicationDefinition {
+        id: "gemini-web",
+        product: "gemini",
+        display_name: "Gemini Web",
+        runtime_kind: RuntimeKind::Browser,
+        legacy_alias: "gemini-web",
+        kind: InstanceKind::GeminiWeb,
+        factory: |root, geo| Arc::new(WebAdapter::new_gemini(root, geo)),
+        requires_geo_profile: true,
+        cleanup_priority: 15,
+    },
 ];
 
 impl ApplicationDefinition {
@@ -108,7 +120,13 @@ impl ApplicationDefinition {
 }
 
 impl InstanceKind {
-    pub const ALL: [Self; 4] = [Self::Code, Self::Desktop, Self::VsCode, Self::Web];
+    pub const ALL: [Self; 5] = [
+        Self::Code,
+        Self::Desktop,
+        Self::VsCode,
+        Self::Web,
+        Self::GeminiWeb,
+    ];
 
     pub fn definition(self) -> &'static ApplicationDefinition {
         APPLICATIONS
@@ -143,10 +161,14 @@ mod tests {
             ("claude-desktop", "/fixture/.cim/instances/desktop"),
             ("claude-vscode", "/fixture/.cim/instances/vscode"),
             ("claude-web", "/fixture/.cim/instances/web"),
+            ("gemini-web", "/fixture/.cim/instances/gemini-web"),
         ] {
             let app = InstanceKind::parse(id).unwrap().definition();
             assert_eq!(app.profile_root("/fixture"), expected);
-            assert_eq!(app.requires_geo_profile, id == "claude-web");
+            assert_eq!(
+                app.requires_geo_profile,
+                matches!(id, "claude-web" | "gemini-web")
+            );
             let adapter = app.create_adapter("/fixture", geo.clone());
             assert_eq!(Arc::strong_count(&adapter), 1);
         }
@@ -158,7 +180,9 @@ mod tests {
         let mut kinds = HashSet::new();
         for app in &APPLICATIONS {
             assert!(names.insert(app.id));
-            assert!(names.insert(app.legacy_alias));
+            if app.legacy_alias != app.id {
+                assert!(names.insert(app.legacy_alias));
+            }
             assert!(kinds.insert(app.kind));
             assert_eq!(InstanceKind::parse(app.id), Some(app.kind));
             assert_eq!(InstanceKind::parse(app.legacy_alias), Some(app.kind));
@@ -173,6 +197,7 @@ mod tests {
             ("claude-desktop", "desktop", "Desktop"),
             ("claude-vscode", "vscode", "VsCode"),
             ("claude-web", "web", "Web"),
+            ("gemini-web", "gemini-web", "GeminiWeb"),
         ] {
             let kind = InstanceKind::parse(id).unwrap();
             assert_eq!(kind.as_str(), key);

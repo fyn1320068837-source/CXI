@@ -138,7 +138,9 @@ impl LaunchTransaction {
         // while this best-effort pass covers helpers that detach during stop.
         // Invalid test or stale PIDs are filtered before converting to libc
         // process IDs.
-        terminate_pids(&pids);
+        if self.adapter.owns_process_tree() {
+            terminate_pids(&pids);
+        }
         stop_result.context("adapter failed while rolling back instance launch")
     }
 }
@@ -264,5 +266,53 @@ mod tests {
         // first cleanup pass.
         transaction.rollback().await.unwrap();
         assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod shared_rollback_tests {
+    use super::*;
+    use crate::instance::CapabilityReport;
+    use async_trait::async_trait;
+
+    struct SharedTab;
+    #[async_trait]
+    impl InstanceAdapter for SharedTab {
+        fn owns_process_tree(&self) -> bool {
+            false
+        }
+        async fn detect(&self) -> CapabilityReport {
+            unreachable!()
+        }
+        async fn prepare(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn launch(&self) -> Result<ProcessHandle> {
+            unreachable!()
+        }
+        async fn stop(&self, _: &ProcessHandle) -> Result<()> {
+            Ok(())
+        }
+        async fn process_tree(&self, handle: &ProcessHandle) -> Vec<u32> {
+            vec![handle.root_pid]
+        }
+    }
+    #[tokio::test]
+    async fn shared_tab_rollback_does_not_kill_sibling_browser_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut transaction = LaunchTransaction::new(
+            Arc::new(SharedTab),
+            ProcessHandle {
+                root_pid: child.id(),
+            },
+        );
+        transaction.rollback().await.unwrap();
+        let alive = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(alive, "tab rollback killed shared browser");
     }
 }

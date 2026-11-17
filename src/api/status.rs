@@ -53,6 +53,8 @@ fn geo_info_from_profile(profile: &GeoProfile) -> GeoInfo {
 
 #[derive(Serialize)]
 struct InstanceStatus {
+    network_scope: &'static str,
+    runtime_id: &'static str,
     kind: String,
     status: String,
     pid: Option<u32>,
@@ -131,105 +133,18 @@ async fn get_status(
                 )
             })
     };
-    let (
-        code_validation,
-        code_validation_details,
-        code_validation_reason,
-        code_direct_endpoints,
-        code_checked_at,
-    ) = validation_for(InstanceKind::Code);
-    let (
-        desktop_validation,
-        desktop_validation_details,
-        desktop_validation_reason,
-        desktop_direct_endpoints,
-        desktop_checked_at,
-    ) = validation_for(InstanceKind::Desktop);
-    let (
-        vscode_validation,
-        vscode_validation_details,
-        vscode_validation_reason,
-        vscode_direct_endpoints,
-        vscode_checked_at,
-    ) = validation_for(InstanceKind::VsCode);
-    let (
-        web_validation,
-        web_validation_details,
-        web_validation_reason,
-        web_direct_endpoints,
-        web_checked_at,
-    ) = validation_for(InstanceKind::Web);
-
-    let instances = vec![
+    let instances = crate::instance::APPLICATIONS.iter().map(|app| {
+        let kind = app.kind;
+        let (validation, validation_details, validation_reason, validation_direct_endpoints, validation_checked_at) = validation_for(kind);
         InstanceStatus {
-            kind: "code".to_string(),
-            status: if status_map
-                .get(&InstanceKind::Code)
-                .copied()
-                .unwrap_or(false)
-            {
-                "running".to_string()
-            } else {
-                "stopped".to_string()
-            },
-            pid: pid_map.get(&InstanceKind::Code).copied().flatten(),
-            validation: code_validation,
-            validation_details: code_validation_details,
-            validation_reason: code_validation_reason,
-            validation_direct_endpoints: code_direct_endpoints,
-            validation_checked_at: code_checked_at,
-        },
-        InstanceStatus {
-            kind: "desktop".to_string(),
-            status: if status_map
-                .get(&InstanceKind::Desktop)
-                .copied()
-                .unwrap_or(false)
-            {
-                "running".to_string()
-            } else {
-                "stopped".to_string()
-            },
-            pid: pid_map.get(&InstanceKind::Desktop).copied().flatten(),
-            validation: desktop_validation,
-            validation_details: desktop_validation_details,
-            validation_reason: desktop_validation_reason,
-            validation_direct_endpoints: desktop_direct_endpoints,
-            validation_checked_at: desktop_checked_at,
-        },
-        InstanceStatus {
-            kind: "vscode".to_string(),
-            status: if status_map
-                .get(&InstanceKind::VsCode)
-                .copied()
-                .unwrap_or(false)
-            {
-                "running".to_string()
-            } else {
-                "stopped".to_string()
-            },
-            pid: pid_map.get(&InstanceKind::VsCode).copied().flatten(),
-            validation: vscode_validation,
-            validation_details: vscode_validation_details,
-            validation_reason: vscode_validation_reason,
-            validation_direct_endpoints: vscode_direct_endpoints,
-            validation_checked_at: vscode_checked_at,
-        },
-        InstanceStatus {
-            kind: "web".to_string(),
-            status: if status_map.get(&InstanceKind::Web).copied().unwrap_or(false) {
-                "running".to_string()
-            } else {
-                "stopped".to_string()
-            },
-            pid: pid_map.get(&InstanceKind::Web).copied().flatten(),
-            validation: web_validation,
-            validation_details: web_validation_details,
-            validation_reason: web_validation_reason,
-            validation_direct_endpoints: web_direct_endpoints,
-            validation_checked_at: web_checked_at,
-        },
-    ];
+            network_scope: if matches!(kind, InstanceKind::Web | InstanceKind::GeminiWeb) { "shared_browser_process_tree" } else { "instance_process_tree" },
+            runtime_id: if matches!(kind, InstanceKind::Web | InstanceKind::GeminiWeb) { "managed-browser" } else { kind.as_str() },
+            kind: kind.as_str().to_string(),
+            status: if status_map.get(&kind).copied().unwrap_or(false) { "running" } else { "stopped" }.to_string(),
+            pid: pid_map.get(&kind).copied().flatten(),
+            validation, validation_details, validation_reason, validation_direct_endpoints, validation_checked_at,
+        }
+    }).collect();
 
     Json(StatusResponse {
         proxy: ProxyStatus {

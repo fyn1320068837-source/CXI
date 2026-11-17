@@ -204,6 +204,7 @@ pub(super) async fn apply_browser_profile(
     port: u16,
     profile: &GeoProfile,
     capture_requests: bool,
+    site: WebSite,
 ) -> Result<BrowserProfileSession> {
     tracing::debug!(port, "Applying browser locale/timezone profile");
     // Chrome DevTools is a loopback endpoint. Do not let HTTP(S)_PROXY from
@@ -223,7 +224,13 @@ pub(super) async fn apply_browser_profile(
                             && target
                                 .url
                                 .as_deref()
-                                .map(|url| url.starts_with("https://claude.ai"))
+                                .map(|url| {
+                                    reqwest::Url::parse(url)
+                                        .map(|url| {
+                                            url.origin().ascii_serialization() == site.origin()
+                                        })
+                                        .unwrap_or(false)
+                                })
                                 .unwrap_or(false)
                     });
                     if let Some(target) = page_target {
@@ -272,7 +279,7 @@ pub(super) async fn apply_browser_profile(
                     1,
                     "Browser.grantPermissions",
                     json!({
-                        "origin": "https://claude.ai",
+                        "origin": site.origin(),
                         "permissions": ["geolocation"]
                     }),
                 )
@@ -293,7 +300,7 @@ pub(super) async fn apply_browser_profile(
     }
 
     if let Some(language) = profile.language.as_deref() {
-        let language_script = language_override_script(language);
+        let language_script = site.language_script(language);
         send_cdp_command(
             &mut socket,
             command_id,
@@ -320,7 +327,11 @@ pub(super) async fn apply_browser_profile(
         command_id += 1;
     }
 
-    if let Some(language) = profile.language.as_deref() {
+    if let Some(language) = profile
+        .language
+        .as_deref()
+        .filter(|_| site == WebSite::Claude)
+    {
         // Keep Claude's own persisted locale aligned with the current exit
         // profile. The page may have been restored from a previous Chrome
         // session, so the new-document hook alone is not sufficient here.
@@ -376,16 +387,21 @@ pub(super) async fn apply_browser_profile(
         &mut socket,
         command_id,
         "Page.navigate",
-        json!({"url": "https://claude.ai"}),
+        json!({"url": site.entry_url()}),
     )
     .await?;
+    command_id += 1;
 
-    if let Some(language) = profile.language.as_deref() {
+    if let Some(language) = profile
+        .language
+        .as_deref()
+        .filter(|_| site == WebSite::Claude)
+    {
         // Give the restored target a short chance to become the Claude
         // document, then update its storage and reload once. This fixes a
         // persisted site preference before Claude's app selects its UI copy.
         tokio::time::sleep(Duration::from_millis(800)).await;
-        let locale_script = language_override_script(language);
+        let locale_script = site.language_script(language);
         send_cdp_command(
             &mut socket,
             command_id,
@@ -401,7 +417,7 @@ pub(super) async fn apply_browser_profile(
             &mut socket,
             command_id,
             "Runtime.evaluate",
-            json!({"expression": language_override_script(language), "returnByValue": true}),
+            json!({"expression": site.language_script(language), "returnByValue": true}),
         )
         .await?;
     }
@@ -412,6 +428,7 @@ pub(super) async fn apply_browser_profile(
 
 #[derive(Debug)]
 struct PendingRequest {
+    instance: String,
     started_at: Instant,
     method: String,
     url: String,
@@ -469,7 +486,12 @@ fn request_outcome(status: u16, failed: bool) -> String {
 /// Observe Chromium's Network domain and publish completed requests to the
 /// dashboard. The monitor is tied to the browser root PID and exits when the
 /// isolated browser is closed.
-pub(super) async fn monitor_browser_requests(port: u16, root_pid: u32, sender: RequestLogSender) {
+pub(super) async fn monitor_browser_requests(
+    port: u16,
+    root_pid: u32,
+    sender: RequestLogSender,
+    site: WebSite,
+) {
     // The DevTools discovery endpoint is local to this browser session and
     // must bypass any inherited HTTP proxy environment variables.
     let client = match reqwest::Client::builder().no_proxy().build() {
@@ -511,7 +533,7 @@ pub(super) async fn monitor_browser_requests(port: u16, root_pid: u32, sender: R
     {
         return;
     }
-    monitor_browser_socket(socket, root_pid, sender).await;
+    monitor_browser_socket(socket, root_pid, sender, site).await;
 }
 
 /// Keep page-scoped CDP overrides in sync with new tabs and popup targets.
@@ -524,6 +546,7 @@ pub(super) async fn monitor_browser_targets(
     profile: GeoProfile,
     initial_target_id: Option<String>,
     sender: Option<RequestLogSender>,
+    site: WebSite,
 ) {
     let mut backoff = Duration::from_millis(250);
     loop {
@@ -536,6 +559,7 @@ pub(super) async fn monitor_browser_targets(
             profile.clone(),
             initial_target_id.clone(),
             sender.clone(),
+            site,
         )
         .await;
         if !process_exists(root_pid) {
@@ -557,6 +581,7 @@ pub(super) async fn monitor_browser_targets_once(
     profile: GeoProfile,
     initial_target_id: Option<String>,
     sender: Option<RequestLogSender>,
+    site: WebSite,
 ) {
     let client = match reqwest::Client::builder().no_proxy().build() {
         Ok(client) => client,
@@ -667,6 +692,7 @@ pub(super) async fn monitor_browser_targets_once(
                     &profile,
                     version.user_agent.as_deref(),
                     sender.is_some(),
+                    site,
                 )
                 .await
                 {
@@ -700,6 +726,7 @@ pub(super) async fn monitor_browser_targets_once(
                     value.get("params").cloned().unwrap_or_default(),
                     &mut pending,
                     sender,
+                    site,
                 )
                 .await;
             }
@@ -714,6 +741,7 @@ async fn configure_attached_page(
     profile: &GeoProfile,
     user_agent: Option<&str>,
     capture_requests: bool,
+    _site: WebSite,
 ) -> Result<()> {
     if capture_requests {
         send_target_command(
@@ -821,6 +849,7 @@ async fn record_network_event(
     params: serde_json::Value,
     pending: &mut HashMap<(String, String), PendingRequest>,
     sender: &RequestLogSender,
+    site: WebSite,
 ) {
     prune_pending(pending);
     let Some(request_id) = params.get("requestId").and_then(|value| value.as_str()) else {
@@ -843,6 +872,7 @@ async fn record_network_event(
             pending.insert(
                 key,
                 PendingRequest {
+                    instance: request_owner(&params, site),
                     started_at: Instant::now(),
                     method: request
                         .get("method")
@@ -874,7 +904,7 @@ async fn record_network_event(
                 };
                 let entry = RequestLogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
-                    instance: "web".to_string(),
+                    instance: request.instance,
                     method: request.method,
                     url: request.url,
                     status: if failed { 0 } else { request.status },
@@ -903,6 +933,7 @@ pub(super) async fn monitor_browser_socket(
     mut socket: BrowserSocket,
     root_pid: u32,
     sender: RequestLogSender,
+    site: WebSite,
 ) {
     let mut pending = HashMap::<String, PendingRequest>::new();
     loop {
@@ -948,6 +979,7 @@ pub(super) async fn monitor_browser_socket(
                 pending.insert(
                     request_id.to_string(),
                     PendingRequest {
+                        instance: request_owner(&params, site),
                         started_at: Instant::now(),
                         method: request
                             .get("method")
@@ -981,7 +1013,7 @@ pub(super) async fn monitor_browser_socket(
                 if let Some(request) = pending.remove(request_id) {
                     let entry = RequestLogEntry {
                         timestamp: chrono::Utc::now().to_rfc3339(),
-                        instance: "web".to_string(),
+                        instance: request.instance,
                         method: request.method,
                         url: request.url,
                         status: request.status,
@@ -1013,7 +1045,7 @@ pub(super) async fn monitor_browser_socket(
                     let error = network_failure_reason(&params);
                     let entry = RequestLogEntry {
                         timestamp: chrono::Utc::now().to_rfc3339(),
-                        instance: "web".to_string(),
+                        instance: request.instance,
                         method: request.method,
                         url: request.url,
                         status: 0,
@@ -1104,8 +1136,8 @@ pub(crate) fn language_override_script(language: &str) -> String {
     };
     format!(
         "(function() {{ \
-            Object.defineProperty(Navigator.prototype, 'language', {{get: () => {:?}}}); \
-            Object.defineProperty(Navigator.prototype, 'languages', {{get: () => [{:?}, {:?}]}}); \
+            Object.defineProperty(Navigator.prototype, 'language', {{configurable: true, get: () => {:?}}}); \
+            Object.defineProperty(Navigator.prototype, 'languages', {{configurable: true, get: () => [{:?}, {:?}]}}); \
             try {{ \
                 if (location.origin === 'https://claude.ai' || location.origin === 'https://www.claude.ai') {{ \
                     localStorage.setItem('spa:locale', {:?}); \
@@ -1286,5 +1318,351 @@ mod session_marker_tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         panic!("detached marker helper {} survived cleanup", child.id());
+    }
+}
+
+#[cfg(test)]
+mod gemini_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn initial_cdp_overrides_precede_product_navigation_without_cross_site_cookies() {
+        use axum::{
+            extract::ws::{Message as AxumMessage, WebSocketUpgrade},
+            routing::get,
+            Json, Router,
+        };
+        for site in [WebSite::Claude, WebSite::Gemini] {
+            let commands =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let captured = commands.clone();
+            let router = Router::new()
+                .route("/json/list", get(move || async move { Json(json!([{"id":"initial", "type":"page", "url":"about:blank", "webSocketDebuggerUrl":format!("ws://127.0.0.1:{port}/page")}])) }))
+                .route("/json/version", get(|| async { Json(json!({"User-Agent":"TestBrowser"})) }))
+                .route("/page", get(move |ws: WebSocketUpgrade| {
+                    let captured = captured.clone();
+                    async move { ws.on_upgrade(move |mut socket| async move {
+                        while let Some(Ok(AxumMessage::Text(text))) = socket.recv().await {
+                            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                            let id = value["id"].clone();
+                            captured.lock().unwrap().push(value);
+                            if socket.send(AxumMessage::Text(json!({"id":id,"result":{}}).to_string())).await.is_err() { break; }
+                        }
+                    }) }
+                }));
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            let profile = GeoProfile {
+                source_ip: Some("203.0.113.5".into()),
+                language: Some("en-US".into()),
+                locale: Some("en_US.UTF-8".into()),
+                timezone: Some("America/New_York".into()),
+                ..GeoProfile::default()
+            };
+            let session = apply_browser_profile(port, &profile, true, site)
+                .await
+                .unwrap();
+            drop(session);
+            let commands = commands.lock().unwrap().clone();
+            let navigation = commands
+                .iter()
+                .position(|c| c["method"] == "Page.navigate")
+                .unwrap();
+            assert_eq!(commands[navigation]["params"]["url"], site.entry_url());
+            for method in [
+                "Network.enable",
+                "Page.addScriptToEvaluateOnNewDocument",
+                "Network.setUserAgentOverride",
+                "Emulation.setTimezoneOverride",
+                "Emulation.setLocaleOverride",
+            ] {
+                assert!(
+                    commands[..navigation].iter().any(|c| c["method"] == method),
+                    "missing {method}"
+                );
+            }
+            let cookies = commands
+                .iter()
+                .filter(|c| c["method"] == "Network.setCookie")
+                .count();
+            assert_eq!(cookies, usize::from(site == WebSite::Claude));
+            if site == WebSite::Gemini {
+                assert!(!serde_json::to_string(&commands)
+                    .unwrap()
+                    .contains("claude.ai"));
+                assert!(!commands.iter().any(|c| c["method"] == "Page.reload"));
+            }
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    #[test]
+    fn profile_process_matching_does_not_cross_products() {
+        let claude = "/fixture/.cim/instances/web/profile";
+        let gemini = "/fixture/.cim/instances/gemini-web/profile";
+        assert!(!command_uses_session_dir(
+            &format!("Chrome --user-data-dir={claude}"),
+            gemini
+        ));
+        assert!(!command_uses_session_dir(
+            &format!("Chrome --user-data-dir={gemini}"),
+            claude
+        ));
+    }
+
+    #[tokio::test]
+    async fn request_logs_are_bound_to_the_product_and_strip_query_secrets() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        for site in [WebSite::Claude, WebSite::Gemini] {
+            let mut pending = HashMap::new();
+            record_network_event("session", "Network.requestWillBeSent", json!({"requestId":"1", "request":{"url":format!("{}/app?token=secret",site.origin()),"method":"GET"}}), &mut pending, &tx, site).await;
+            record_network_event(
+                "session",
+                "Network.responseReceived",
+                json!({"requestId":"1", "response":{"status":200}}),
+                &mut pending,
+                &tx,
+                site,
+            )
+            .await;
+            record_network_event(
+                "session",
+                "Network.loadingFinished",
+                json!({"requestId":"1"}),
+                &mut pending,
+                &tx,
+                site,
+            )
+            .await;
+            let entry = rx.recv().await.unwrap();
+            assert_eq!(entry.instance, site.log_key());
+            assert_eq!(entry.status, 200);
+            assert!(!entry.url.contains("secret"));
+        }
+    }
+}
+
+pub(super) async fn tab_exists(port: u16, id: &str) -> Result<bool> {
+    let targets = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()?
+        .get(format!("http://127.0.0.1:{port}/json/list"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<DevToolsTarget>>()
+        .await?;
+    Ok(targets.iter().any(|t| t.target_id.as_deref() == Some(id)))
+}
+
+pub(super) async fn tab_action(port: u16, action: &str, id: &str) -> Result<()> {
+    anyhow::ensure!(matches!(action, "activate" | "close"), "invalid tab action");
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()?
+        .get(format!(
+            "http://127.0.0.1:{port}/json/{action}/{}",
+            encode_query_component(id)
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+pub(super) async fn open_site_tab(
+    port: u16,
+    site: WebSite,
+    profile: &GeoProfile,
+    root_pid: u32,
+) -> Result<String> {
+    open_url_tab(port, site.entry_url(), profile, root_pid).await
+}
+
+/// Create a blank tab in the existing window, install the same environment,
+/// then navigate. Never fall back to navigating an arbitrary existing tab.
+pub(super) async fn open_url_tab(
+    port: u16,
+    url: &str,
+    profile: &GeoProfile,
+    root_pid: u32,
+) -> Result<String> {
+    anyhow::ensure!(profile.is_ready(), "GeoIP profile is not ready");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let target = client
+        .put(format!("http://127.0.0.1:{port}/json/new?about:blank"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<DevToolsTarget>()
+        .await?;
+    let id = target.target_id.context("created tab has no id")?;
+    let setup = async {
+        let (mut socket, _) = connect_async(target.websocket_url.context("created tab has no debugger")?).await?;
+        let version = client.get(format!("http://127.0.0.1:{port}/json/version")).send().await?.error_for_status()?.json::<DevToolsVersion>().await?;
+        let language = profile.language.as_deref().context("language missing")?;
+        let timezone = profile.timezone.as_deref().context("timezone missing")?;
+        for (i, (method, params)) in [
+            ("Page.enable", json!({})),
+            ("Page.addScriptToEvaluateOnNewDocument", json!({"source": language_override_script(language)})),
+            ("Network.setUserAgentOverride", json!({"userAgent":version.user_agent.context("browser user agent missing")?,"acceptLanguage":language})),
+            ("Emulation.setLocaleOverride", json!({"locale":language})),
+            ("Emulation.setTimezoneOverride", json!({"timezoneId":timezone})),
+            ("Emulation.setGeolocationOverride", json!({"latitude":profile.latitude,"longitude":profile.longitude,"accuracy":100})),
+            ("Page.navigate", json!({"url":url})),
+        ].into_iter().enumerate() {
+            if let Err(error) = send_cdp_command(&mut socket, i as u64 + 1, method, params).await {
+                // Chrome rejects a second debugger's locale/timezone override.
+                // Accept only this specific conflict, after proving the live value.
+                let property = match method {
+                    "Emulation.setLocaleOverride" => Some(("locale", language)),
+                    "Emulation.setTimezoneOverride" => Some(("timeZone", timezone)),
+                    _ => None,
+                };
+                if let Some((property, expected)) = property.filter(|_| error.to_string().contains("already in effect")) {
+                    verify_runtime_value(&mut socket, 100 + i as u64, property, expected).await?;
+                } else { return Err(error); }
+            }
+        }
+        // Keep environment overrides attached. The browser target monitor owns logs.
+        tokio::spawn(async move {
+            while process_exists(root_pid) {
+                match tokio::time::timeout(Duration::from_secs(2), socket.next()).await {
+                    Ok(Some(Ok(_))) | Err(_) => {},
+                    _ => break,
+                }
+            }
+        });
+        Ok::<(), anyhow::Error>(())
+    }.await;
+    if let Err(error) = setup {
+        tracing::error!(error = %format!("{error:#}"), "Shared browser tab setup failed");
+        let close = tab_action(port, "close", &id).await;
+        return Err(error.context(format!("new tab setup failed; tab cleanup: {close:?}")));
+    }
+    tab_action(port, "activate", &id).await?;
+    Ok(id)
+}
+
+// Attribute subresources to their document, not to the site that launched Chrome.
+fn request_owner(params: &serde_json::Value, fallback: WebSite) -> String {
+    let url = params
+        .get("documentURL")
+        .and_then(|v| v.as_str())
+        .or_else(|| params.pointer("/request/url").and_then(|v| v.as_str()));
+    match url
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .as_deref()
+    {
+        Some("gemini.google.com") => "gemini-web".into(),
+        Some("claude.ai" | "www.claude.ai") => "web".into(),
+        // Auth pages and unrelated tabs cannot reliably be attributed by hostname.
+        Some(_) => "browser".into(),
+        None => fallback.log_key().into(),
+    }
+}
+
+#[cfg(test)]
+mod shared_log_tests {
+    use super::*;
+    #[test]
+    fn shared_requests_follow_document_origin_not_first_launched_site() {
+        assert_eq!(
+            request_owner(
+                &json!({"documentURL":"https://gemini.google.com/app", "request":{"url":"https://www.gstatic.com/script.js"}}),
+                WebSite::Claude
+            ),
+            "gemini-web"
+        );
+        assert_eq!(
+            request_owner(
+                &json!({"documentURL":"https://claude.ai/new", "request":{"url":"https://www.gstatic.com/script.js"}}),
+                WebSite::Gemini
+            ),
+            "web"
+        );
+        assert_eq!(
+            request_owner(
+                &json!({"documentURL":"https://accounts.google.com/", "request":{"url":"https://www.gstatic.com/script.js"}}),
+                WebSite::Claude
+            ),
+            "browser"
+        );
+    }
+}
+
+async fn verify_runtime_value(
+    socket: &mut BrowserSocket,
+    id: u64,
+    property: &str,
+    expected: &str,
+) -> Result<()> {
+    let expression = format!(
+        "Intl.DateTimeFormat().resolvedOptions()[{}]",
+        serde_json::to_string(property)?
+    );
+    socket.send(Message::Text(json!({"id":id,"method":"Runtime.evaluate","params":{"expression":expression,"returnByValue":true}}).to_string())).await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(message) = socket.next().await {
+            let message = message?;
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let value: serde_json::Value = serde_json::from_str(&text)?;
+            if value.get("id").and_then(|v| v.as_u64()) != Some(id) {
+                continue;
+            }
+            anyhow::ensure!(
+                value
+                    .pointer("/result/result/value")
+                    .and_then(|v| v.as_str())
+                    == Some(expected),
+                "shared browser {property} does not match proxy profile"
+            );
+            return Ok::<_, anyhow::Error>(());
+        }
+        anyhow::bail!("DevTools disconnected during environment verification")
+    })
+    .await
+    .context("timed out verifying shared browser environment")?
+}
+
+#[cfg(test)]
+mod shared_environment_tests {
+    use super::*;
+    #[tokio::test]
+    async fn existing_environment_must_match_before_navigation() {
+        for (actual, pass) in [("en-US", true), ("zh-CN", false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let request = socket.next().await.unwrap().unwrap();
+                let value: serde_json::Value =
+                    serde_json::from_str(request.to_text().unwrap()).unwrap();
+                socket.send(Message::Text(json!({"id":value["id"],"result":{"result":{"type":"string","value":actual}}}).to_string())).await.unwrap();
+            });
+            let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}"))
+                .await
+                .unwrap();
+            assert_eq!(
+                verify_runtime_value(&mut socket, 100, "locale", "en-US")
+                    .await
+                    .is_ok(),
+                pass
+            );
+            server.await.unwrap();
+        }
     }
 }

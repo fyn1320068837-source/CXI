@@ -1,6 +1,6 @@
 # Claude Instance Manager (CIM)
 
-> macOS 上统一管理 Claude 四类客户端实例，共享住宅代理出口，提供可验证的网络隔离。
+> macOS 上统一管理 Claude 四类客户端及 Gemini Web，每类一个固定实例，共享代理出口并提供可验证的网络隔离。
 
 **版本**: 1.0.0 · **平台**: macOS 13+ · **架构**: Apple Silicon / Intel
 
@@ -75,14 +75,15 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 
 ---
 
-## 四个实例
+## 已接入实例
 
 | 实例 | 客户端 | 隔离方式 | 网络验证 |
 |------|--------|---------|---------|
 | A · Code | Claude Code CLI | 独立 `HOME` 目录 | ✅ PASS/FAIL/UNKNOWN |
 | B · Desktop | Claude Desktop | Desktop Lite：独立目录 + `cimgrp`/PF | ⚠ PARTIAL（网络可验证，位置不支持） |
 | C · VSCode | VS Code 扩展 | 独立 `--user-data-dir` | ✅ PASS/FAIL/UNKNOWN |
-| D · Web | Chrome/Chromium | 独立 `--user-data-dir` | ✅ PASS/FAIL/UNKNOWN |
+| D · Claude Web | Chrome/Chromium | 独立 `--user-data-dir` | ✅ PASS/FAIL/UNKNOWN |
+| E · Gemini Web | Chrome/Chromium | 与 Claude Web 同窗口不同标签页，共用 `web/profile` 和代理/PF | 共享标签页实现；登录需在共享 profile 中验证 |
 
 所有实例统一使用本地 sing-box 网关（`127.0.0.1:7890/7891`），住宅代理凭证只在网关一处配置。
 
@@ -116,6 +117,7 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 └── instances/
     ├── code/                 # A 实例 HOME
     ├── vscode/               # C 实例 user-data + extensions
+    ├── gemini-web/           # 旧 Gemini 独立目录，保留备份、不再用于新启动
     ├── web/                  # D 实例隔离目录
     │   ├── profile/          # 持久化 Chrome 配置、登录态和站点 Cookie（0700）
     │   └── sessions/         # 每次启动的临时进程清理标记
@@ -130,14 +132,16 @@ sudo "$HOME/.cim/bin/cim" install-firewall
 
 ```
 GET  /health                            健康检查
-GET  /api/status                        全局状态（代理、GeoIP、四实例、防火墙）
+GET  /api/status                        全局状态（代理、GeoIP、注册实例、防火墙）
+GET  /api/security/gemini-web           Gemini Web 安全结论（共享浏览器连接范围，主动证据仍单独记录）
 GET  /api/security/web                  Web 安全聚合结论（PASS/FAIL/BLOCKED/UNKNOWN）
 GET  /api/security/desktop              Desktop Lite 安全聚合结论（PARTIAL/FAIL/BLOCKED/UNKNOWN）
 GET  /api/logs?limit=                   当前请求日志（30分钟/最多2000条）
 DELETE /api/logs                        清空当前请求日志
 GET  /api/validation/{kind}             最近的进程级连接验证证据
-POST /api/instances/{code|vscode|web|desktop}/launch  启动实例
-POST /api/instances/{code|vscode|web|desktop}/stop    停止实例
+POST /api/instances/{code|vscode|web|desktop|gemini-web}/launch  启动实例
+POST /api/instances/{code|vscode|web|desktop|gemini-web}/stop    停止实例（Web 为关闭站点标签）
+POST /api/browser/stop                  停止整个受管浏览器
 POST /api/proxy/test                    测试代理连通性
 WS   /ws                                实时状态推送
 ```

@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- Web 结构已按用户确认调整为共享受管浏览器：Claude/Gemini 保留独立入口，共用旧 `web/profile`、一个进程及代理/PF，按站点管理标签页；旧 Gemini profile 保留，不合并 Cookie。下一步验证共享环境登录保持、手动关闭标签后的状态同步、DNS/WebRTC/IPv6 与断线恢复。连接结论必须明确为共享浏览器范围。
+
 - 应用注册表第一阶段已实现：四类固定 ID 与旧别名指向同一实例，新增只读 `/api/applications`；原目录、状态/数据库键、登录态与代理隔离逻辑保持不变。范围见 [应用注册表兼容说明](application-registry.md)，固定实例配置已实现旧文件默认兼容、启动禁用校验、受保护的一次性自动启动和配置快照接口；管理器已按注册表创建和选择适配器，清理/日志/认证通过接口分派，原四类运行键和目录保持兼容。
 - Code、VS Code、Web 使用 root-owned `cim-instance-launch`、`cimgrp` 和 PF fail-closed。
 - Web 已完成 GeoIP 首屏覆盖、真实 STUN 与代理故障恢复复测；当前会话 DNS 包级验证仍待完成。IPv6 采用默认阻断实例直连的策略，PF 规则已核对；宿主缺少 IPv6 路由，所以主动阻断实测仍为 `inconclusive`，不表示未配置阻断。旧 `.invalid` 域名样本不计作最终 DNS 通过。
